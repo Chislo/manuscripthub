@@ -43,14 +43,12 @@ st.set_page_config(
 def inject_seo():
     """Injects real SEO meta tags into the header using Javascript."""
     meta_tags = """
-    <head>
         <meta name="google-site-verification" content="-rkPJOimCPb2hek8cWMI8IPBkj4hlTGa529vkUbO-i8" />
         <meta name="description" content="Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees, check acceptance rates, and analyze your paper's fit.">
         <meta name="keywords" content="journal finder, manuscript checker, submission fees, acceptance rate, predatory journals, academic publishing, AI research assistant, free to publish">
         <meta property="og:title" content="ManuscriptHub - AI Journal Finder">
         <meta property="og:description" content="Find the perfect journal for your research. Compare acceptance rates, speed, and fees instantly.">
         <meta property="og:type" content="website">
-    </head>
     """
     # This silent div injects the meta tags into the parent window
     st.markdown(
