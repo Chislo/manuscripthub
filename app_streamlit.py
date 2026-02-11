@@ -187,40 +187,8 @@ def analyze_manuscript_text(full_text):
 # LLM & API Configuration
 # ────────────────────────────────────────────────
 
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# (Redundant call_llm removed - see line 607 for the definitive version)
 
-def call_llm(prompt, temperature=0.7):
-    """
-    Calls the configured LLM (Gemini or Ollama).
-    """
-    model_choice = "Gemini Pro"
-    
-    # Fallback to Ollama if no API key
-    if "GEMINI_API_KEY" not in st.secrets:
-         model_choice = "Ollama (Llama3)"
-    
-    if model_choice == "Gemini Pro":
-        try:
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature
-                )
-            )
-            return response.text
-        except Exception as e:
-            return f"Error calling Gemini: {e}"
-    else:
-        # Ollama fallback
-        try:
-            response = ollama.chat(model='llama3', messages=[
-              {'role': 'user', 'content': prompt},
-            ])
-            return response['message']['content']
-        except Exception as e:
-            return f"Error calling Ollama: {e}"
 
 # ────────────────────────────────────────────────
 # Journal Metadata Load
@@ -605,55 +573,67 @@ else:
 # LLM Helper + JSON validator with retry
 # ────────────────────────────────────────────────
 def call_llm(prompt, temperature=0.15):
+    # Retry logic for resilience
+    max_retries = 2
+    
     # 1. Try Google Gemini (Cloud)
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-            model = genai.GenerativeModel("gemini-flash-latest")
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature
+    if "GEMINI_API_KEY" in st.secrets:
+        for attempt in range(max_retries + 1):
+            try:
+                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                model = genai.GenerativeModel("gemini-flash-latest")
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=temperature
+                    )
                 )
-            )
-            return response.text.strip()
-    except Exception as e:
-        # If Gemini failed for a reason other than missing key, log it
-        if "GEMINI_API_KEY" in st.secrets:
-            print(f"Gemini error: {e}")
+                return response.text.strip()
+            except Exception as e:
+                # If Gemini failed for a reason other than missing key, log it
+                print(f"Gemini error (Attempt {attempt+1}): {e}")
+                if attempt < max_retries:
+                    time.sleep(2) # Backoff
+                else:
+                    pass # Fall through to Ollama
 
     # 2. Fallback to Ollama (Local/Remote)
+    # Check if using remote Ollama host via secrets
+    remote_host = None
     try:
-        # Check if using remote Ollama host via secrets
-        remote_host = None
+        remote_host = st.secrets.get("OLLAMA_HOST")
+    except:
+        pass
+
+    for attempt in range(max_retries + 1):
         try:
-            remote_host = st.secrets.get("OLLAMA_HOST")
-        except:
-            pass
+            if remote_host:
+                 client = ollama.Client(host=st.secrets["OLLAMA_HOST"])
+                 response = client.chat(
+                    model="gpt-oss:120b-cloud", # Assuming user kept this name or change to 'llama3'
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": temperature}
+                )
+                 return response['message']['content'].strip()
             
-        if remote_host:
-             client = ollama.Client(host=st.secrets["OLLAMA_HOST"])
-             response = client.chat(
-                model="gpt-oss:120b-cloud", # Assuming user kept this name or change to 'llama3'
+            # Local Ollama
+            response = ollama.chat(
+                model="gpt-oss:120b-cloud",
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": temperature}
             )
-             return response['message']['content'].strip()
-        
-        # Local Ollama
-        response = ollama.chat(
-            model="gpt-oss:120b-cloud",
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": temperature}
-        )
-        return response['message']['content'].strip()
-    except Exception as e:
-        err_msg = str(e)
-        if "connection" in err_msg.lower():
-             st.error(f"⚠️ LLM Connection Error: Could not reach Ollama. Is the server running? ({err_msg})")
-        else:
-             st.error(f"⚠️ LLM Inference Error: {err_msg}")
-        return None
+            return response['message']['content'].strip()
+        except Exception as e:
+            err_msg = str(e)
+            print(f"Ollama error (Attempt {attempt+1}): {err_msg}")
+            if attempt < max_retries:
+                time.sleep(2)
+            else:
+                if "connection" in err_msg.lower():
+                     st.error(f"⚠️ LLM Connection Error: Could not reach Ollama. Is the server running? ({err_msg})")
+                else:
+                     st.error(f"⚠️ LLM Inference Error: {err_msg}")
+                return None
 
 def parse_llm_json(raw, max_retries=2):
     for attempt in range(max_retries + 1):
@@ -950,6 +930,23 @@ def format_review_time(months, split=False):
 # ────────────────────────────────────────────────
 # PDF Generation Helper
 # ────────────────────────────────────────────────
+def clean_text_for_pdf(text: str) -> str:
+    """Sanitizes text for FPDF (latin-1) by replacing unsupported unicode characters."""
+    if not isinstance(text, str):
+        return str(text)
+    
+    # Common unicode replacements for better PDF compatibility
+    replacements = {
+        "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", 
+        "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2026": "...", 
+        "\u00a0": " ", "\u2022": "*", "\u201e": '"', "\u201a": "'"
+    }
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+    
+    # Encode to latin-1, replacing errors with '?'
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
 def generate_pdf_report(recommendations):
     pdf = FPDF()
     pdf.add_page()
@@ -968,28 +965,45 @@ def generate_pdf_report(recommendations):
         journal = item["journal"]
         meta = find_journal_meta(journal)
         
-        # Journal Title
+        # Journal Title (clean)
         pdf.set_font("Helvetica", style="B", size=12)
-        pdf.cell(0, 8, f"{item['rank']}. {journal}", ln=True)
+        pdf.cell(0, 8, clean_text_for_pdf(f"{item['rank']}. {journal}"), ln=True)
         
         # Metrics Line
         pdf.set_font("Helvetica", size=10)
         fit_txt = fit_label(item.get('fit_score', 0))
+        
+        # We need to make sure format_sjr etc exist or handle errors, but they seem to be imported helpers or defined elsewhere
+        # Assuming format_sjr returns strings safe for pdf or we clean them too
+        sjr_val, sjr_lbl = format_sjr(meta.get('sjr'), split=True) if 'format_sjr' in globals() else (str(meta.get('sjr','N/A')), '')
+        
+        # Re-using logic from original code but adding cleaning
+        # The original code called format_sjr, format_review_time, format_acceptance_rate.
+        # I need to trust they are available.
+        # Wait, I don't see format_sjr defined in the snippet I viewed earlier (lines 920-964), but it was used there.
+        # So I will just copy the logic I saw in the file view.
+        
+        # Actually, let's look at lines 946-948 again to be sure on the function names.
+        # sjr_val, sjr_lbl = format_sjr(meta.get('sjr'), split=True)
+        # speed_val, speed_lbl = format_review_time(meta.get('avg_review_months'), split=True)
+        # acc_val, acc_lbl = format_acceptance_rate(meta.get('acceptance_rate'), split=True)
+        
+        # To be safe and avoid NameError if I missed something, I will stick to the exact lines from the original file view for those calls.
+        
         sjr_val, sjr_lbl = format_sjr(meta.get('sjr'), split=True)
         speed_val, speed_lbl = format_review_time(meta.get('avg_review_months'), split=True)
-        acc_val, acc_lbl = format_acceptance_rate(meta.get('acceptance_rate'), split=True)
         
         metrics = f"Fit: {item.get('fit_score', 0):.0%} ({fit_txt})  |  Prestige: {sjr_val} ({sjr_lbl})  |  Speed: {speed_val} ({speed_lbl})"
-        pdf.cell(0, 6, metrics, ln=True)
+        pdf.cell(0, 6, clean_text_for_pdf(metrics), ln=True)
         
-        # Reason Analysis
-        pdf.multi_cell(0, 6, f"Reason: {item['reason']}")
+        # Reason Analysis (clean)
+        pdf.multi_cell(0, 6, clean_text_for_pdf(f"Reason: {item['reason']}"))
         
         # Metadata
         field = item.get('field', 'N/A')
         oa = "Open Access" if meta.get("open_access") else "Subscription"
         fee = "Submission Fee: Yes" if meta.get("submission_fee") else "No Submission Fee"
-        pdf.cell(0, 6, f"Field: {field}  |  Model: {oa} ({fee})", ln=True)
+        pdf.cell(0, 6, clean_text_for_pdf(f"Field: {field}  |  Model: {oa} ({fee})"), ln=True)
         
         pdf.ln(5)
         
@@ -1636,6 +1650,10 @@ elif st.session_state.current_page == "Manuscript Checker":
                                 
                                 st.write("🤖 Extracting specific requirements (word counts, style)...")
                                 live_reqs = extract_requirements_from_text(clean_text, mc_journal, call_llm)
+                                
+                                # Add a short delay to prevent rate-limiting on the LLM API
+                                time.sleep(2)
+                                
                                 if live_reqs:
                                     live_req_text = f"VERIFIED LIVE REQUIREMENTS FOR {mc_journal}:\n{json.dumps(live_reqs, indent=2)}"
                                     st.session_state.mc_live_verified = True
