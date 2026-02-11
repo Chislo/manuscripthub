@@ -44,6 +44,7 @@ def inject_seo():
     """Injects real SEO meta tags into the header using Javascript."""
     meta_tags = """
     <head>
+        <meta name="google-site-verification" content="google14fd0ef89fb01bc6" />
         <meta name="description" content="Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees, check acceptance rates, and analyze your paper's fit.">
         <meta name="keywords" content="journal finder, manuscript checker, submission fees, acceptance rate, predatory journals, academic publishing, AI research assistant, free to publish">
         <meta property="og:title" content="ManuscriptHub - AI Journal Finder">
