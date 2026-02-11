@@ -396,7 +396,8 @@ def infer_field(title, abstract, fields):
 # ────────────────────────────────────────────────
 # Analytics & Logging
 # ────────────────────────────────────────────────
-ANALYTICS_FILE = "analytics.csv"
+# Use absolute path so analytics survive Streamlit reruns and working directory changes
+ANALYTICS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analytics.csv")
 
 def log_event(event_type, details=""):
     """Logs an event to a persistent CSV file."""
@@ -410,6 +411,8 @@ def log_event(event_type, details=""):
             if not file_exists:
                 f.write("timestamp,event_type,details\n")
             f.write(f"{timestamp},{event_type},{details}\n")
+            f.flush()
+            os.fsync(f.fileno())
     except Exception as e:
         print(f"Logging error: {e}")
 
@@ -493,7 +496,7 @@ def recommend_journals(payload):
             journal_context += f"- **{name}**\n"
             journal_context += f"  Field: {data.get('field', 'N/A')}\n"
             journal_context += f"  Scope: {data.get('scope', 'N/A')[:120]}...\n"
-            journal_context += f"  SJR: {data.get('sjr', 'N/A')} | Accept: {data.get('acceptance_rate', 'N/A')}\n"
+            journal_context += f"  SJR: {data.get('sjr', 'N/A')} | Accept: {format_acceptance_rate(data.get('acceptance_rate'))}\n"
             journal_context += f"  Avg review: {data.get('avg_review_months', 'N/A')} mo\n\n"
         context_instruction = "Select the top 20 best matching journals from the CANDIDATE LIST below."
     else:
@@ -560,6 +563,76 @@ def fit_label(score):
     if score >= 0.55: return "Strong fit"
     if score >= 0.4: return "Moderate fit"
     return "Weak fit"
+
+def format_acceptance_rate(rate, split=False):
+    """Convert raw acceptance rate (e.g., 0.08) to human-readable string.
+    If split=True, returns (percentage_str, label_str) tuple for use in st.metric."""
+    if rate is None or rate == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        r = float(rate)
+        pct = round(r * 100) if r <= 1 else round(r)
+        if pct <= 5:
+            label = "Highly Selective"
+        elif pct <= 15:
+            label = "Very Selective"
+        elif pct <= 30:
+            label = "Selective"
+        elif pct <= 50:
+            label = "Moderate"
+        else:
+            label = "Accessible"
+        if split:
+            return (f"{pct}%", label)
+        return f"{pct}% ({label})"
+    except (ValueError, TypeError):
+        return (str(rate), "") if split else str(rate)
+
+def format_sjr(sjr, split=False):
+    """Convert SJR score to human-readable label."""
+    if sjr is None or sjr == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        s = float(sjr)
+        if s >= 10:
+            label = "World-Leading"
+        elif s >= 5:
+            label = "Top Tier"
+        elif s >= 2:
+            label = "High Impact"
+        elif s >= 1:
+            label = "Good Impact"
+        elif s >= 0.5:
+            label = "Moderate"
+        else:
+            label = "Emerging"
+        if split:
+            return (f"{s:.2f}", label)
+        return f"{s:.2f} ({label})"
+    except (ValueError, TypeError):
+        return (str(sjr), "") if split else str(sjr)
+
+def format_review_time(months, split=False):
+    """Convert review time in months to human-readable label."""
+    if months is None or months == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        m = float(months)
+        if m <= 2:
+            label = "Very Fast"
+        elif m <= 4:
+            label = "Fast"
+        elif m <= 6:
+            label = "Average"
+        elif m <= 9:
+            label = "Slow"
+        else:
+            label = "Very Slow"
+        if split:
+            return (f"{m:.1f} mo", label)
+        return f"{m:.1f} months ({label})"
+    except (ValueError, TypeError):
+        return (str(months), "") if split else str(months)
 
 if st.session_state.current_page == "Journal Finder":
     # ────────────────────────────────────────────────
@@ -666,10 +739,10 @@ if st.session_state.current_page == "Journal Finder":
                 st.info(item["reason"])
 
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Fit", f"{item.get('fit_score', '–'):.2f}")
-                col2.metric("Prestige", f"{item.get('prestige_score', '–'):.2f}")
-                col3.metric("Speed", f"{item.get('speed_score', '–'):.2f}")
-                col4.metric("Acceptance", f"{item.get('acceptance_score', '–'):.2f}")
+                col1.metric("Fit", f"{item.get('fit_score', 0):.0%}")
+                col2.metric("Prestige", f"{item.get('prestige_score', 0):.0%}")
+                col3.metric("Speed", f"{item.get('speed_score', 0):.0%}")
+                col4.metric("Acceptance", f"{item.get('acceptance_score', 0):.0%}")
 
                 st.markdown(f"**Assessment:** {fit_label(item.get('fit_score', 0.0))}")
 
@@ -681,7 +754,7 @@ if st.session_state.current_page == "Journal Finder":
                 details.append(f"Field: {item.get('field', 'N/A')}")
                 st.markdown(f"**Details:** {' • '.join(details)}")
 
-                # Cost Model badges
+                # Cost Model badges — clear differentiation
                 cost_badges = []
                 
                 # Use local meta or fall back to LLM-provided info
@@ -690,38 +763,32 @@ if st.session_state.current_page == "Journal Finder":
                 is_oa = meta.get("open_access")
                 is_apc = meta.get("apc")
 
-                # AI Fallback logic if JSON is empty
+                # AI Fallback logic if journal not in our database
                 if not meta:
                     is_sub_fee = (item.get("sub_fee") == "Yes")
                     is_oa = ("Open Access" in item.get("oa_status", ""))
                     is_free_to_author = (not is_sub_fee and not is_oa) or ("Diamond" in item.get("oa_status", ""))
                     is_apc = is_oa and ("Diamond" not in item.get("oa_status", ""))
 
-                # 1. Free to publish (Zero base cost)
-                if is_free_to_author and not is_sub_fee:
-                    if is_oa and not is_apc:
-                         # Diamond OA
-                         cost_badges.append('<span style="background-color:#e6ffe6; color:#006600; padding:4px 8px; border-radius:4px; font-size:14px; margin-right:8px;">💎 <b>Diamond Open Access</b> (Free to publish & read)</span>')
-                    else:
-                         # Subscription default
-                         cost_badges.append('<span style="background-color:#f0f7ff; color:#004085; padding:4px 8px; border-radius:4px; font-size:14px; margin-right:8px;">✅ <b>Free to Publish</b> (Subscription Model)</span>')
+                # ─── Publishing Cost Model ───
+                if is_oa and not is_apc:
+                    # Diamond OA — completely free
+                    cost_badges.append('<span style="background-color:#e6ffe6; color:#006600; padding:4px 10px; border-radius:4px; font-size:14px; margin-right:8px;">💎 <b>Diamond Open Access</b> — Free to publish & read</span>')
+                elif is_oa and is_apc:
+                    # Gold OA — APC required
+                    cost_badges.append('<span style="background-color:#fff0e6; color:#7a4510; padding:4px 10px; border-radius:4px; font-size:14px; margin-right:8px;">🔓 <b>Open Access</b> — APC (Article Processing Charge) applies</span>')
+                elif not is_oa:
+                    # Subscription model — free to publish
+                    cost_badges.append('<span style="background-color:#f0f7ff; color:#004085; padding:4px 10px; border-radius:4px; font-size:14px; margin-right:8px;">✅ <b>Free to Publish</b> — Subscription journal (readers pay, not authors)</span>')
                 
-                # 2. Submission Fee (WARNING COLOR)
+                # ─── Submission Fee (separate from APC!) ───
                 if is_sub_fee:
-                    cost_badges.append('<span style="background-color:#fff3cd; color:#856404; padding:4px 8px; border-radius:4px; font-size:14px; margin-right:8px;">📄 <b>Submission Fee Required</b></span>')
-                    if not is_oa:
-                         cost_badges.append('<span style="background-color:#f8f9fa; color:#383d41; padding:4px 8px; border-radius:4px; font-size:14px; margin-right:8px;">📧 Subscription Model</span>')
-                
-                # 3. Paid Open Access (APC)
-                if is_apc:
-                     cost_badges.append('<span style="background-color:#fff5f5; color:#721c24; padding:4px 8px; border-radius:4px; font-size:14px; margin-right:8px;">💰 <b>Open Access Available</b> (APC applies)</span>')
+                    cost_badges.append('<span style="background-color:#fff3cd; color:#856404; padding:4px 10px; border-radius:4px; font-size:14px; margin-right:8px;">⚠️ <b>Submission Fee</b> — Fee charged when you submit (separate from any APC)</span>')
 
                 if cost_badges:
-                     st.markdown(" ".join(cost_badges), unsafe_allow_html=True)
-                else:
-                     st.markdown('<span style="background-color:#f8f9fa; color:#383d41; padding:4px 8px; border-radius:4px; font-size:14px;">Commonly Subscription/Hybrid</span>', unsafe_allow_html=True)
+                    st.markdown(" ".join(cost_badges), unsafe_allow_html=True)
 
-                # Check Readiness button — links to Manuscript Checker
+
                 if st.button(f"📄 Check Readiness → {journal}", key=f"check_readiness_{idx}_{journal.replace(' ', '_')}", use_container_width=True):
                     st.session_state.mc_target_journal = journal
                     st.session_state.current_page = "Manuscript Checker"
@@ -865,18 +932,35 @@ elif st.session_state.current_page == "Manuscript Checker":
     )
     
     if journal_mode == "Select from database":
-        # Find the index of pre-filled journal
-        default_idx = 0
-        if prefilled_journal and prefilled_journal in all_journal_names:
-            default_idx = all_journal_names.index(prefilled_journal)
-        
-        mc_journal = st.selectbox(
-            "**Select Target Journal**",
-            all_journal_names,
-            index=default_idx,
-            key="mc_journal_selectbox",
-            help="Search by typing — all journals in our database are available."
+        # Search filter + selectbox combo
+        search_query = st.text_input(
+            "🔍 **Search journals**",
+            value=prefilled_journal if prefilled_journal else "",
+            placeholder="Start typing to filter (e.g., 'Journal of Finance')",
+            key="mc_journal_search"
         )
+        
+        # Filter journal list based on search
+        if search_query.strip():
+            filtered_journals = [j for j in all_journal_names if search_query.lower() in j.lower()]
+        else:
+            filtered_journals = all_journal_names
+        
+        if filtered_journals:
+            # Find index of pre-filled journal in filtered list
+            default_idx = 0
+            if prefilled_journal and prefilled_journal in filtered_journals:
+                default_idx = filtered_journals.index(prefilled_journal)
+            
+            mc_journal = st.selectbox(
+                f"**Select from {len(filtered_journals)} matching journals**",
+                filtered_journals,
+                index=default_idx,
+                key="mc_journal_selectbox",
+            )
+        else:
+            st.warning(f"No journals found matching '{search_query}'. Try a different search or switch to manual entry.")
+            mc_journal = search_query  # Use the search text as fallback
     else:
         mc_journal = st.text_input(
             "**Target Journal Name**",
@@ -889,13 +973,20 @@ elif st.session_state.current_page == "Manuscript Checker":
     if mc_journal and mc_journal in JOURNAL_METADATA:
         jmeta = JOURNAL_METADATA[mc_journal]
         jm_cols = st.columns(5)
-        jm_cols[0].metric("SJR", jmeta.get("sjr", "N/A"))
+        sjr_val, sjr_label = format_sjr(jmeta.get("sjr"), split=True)
+        jm_cols[0].metric("SJR", sjr_val, delta=sjr_label, delta_color="off")
         jm_cols[1].metric("Quartile", jmeta.get("quartile", "N/A"))
-        jm_cols[2].metric("Acceptance", f"{jmeta.get('acceptance_rate', 'N/A')}")
-        jm_cols[3].metric("Avg Review", f"{jmeta.get('avg_review_months', 'N/A')} mo")
+        acc_pct, acc_label = format_acceptance_rate(jmeta.get('acceptance_rate'), split=True)
+        jm_cols[2].metric("Acceptance", acc_pct, delta=acc_label, delta_color="off")
+        rev_val, rev_label = format_review_time(jmeta.get('avg_review_months'), split=True)
+        jm_cols[3].metric("Avg Review", rev_val, delta=rev_label, delta_color="off")
         jm_cols[4].metric("Field", jmeta.get("field", "N/A"))
         if jmeta.get("scope"):
             st.caption(f"**Scope:** {jmeta['scope'][:200]}...")
+        # Link to journal homepage / submission guidelines
+        homepage = jmeta.get("homepage_url", jmeta.get("website", ""))
+        if homepage:
+            st.markdown(f"🔗 [**Visit Journal Website / Author Guidelines**]({homepage})", unsafe_allow_html=True)
     
     st.divider()
     
@@ -916,21 +1007,45 @@ elif st.session_state.current_page == "Manuscript Checker":
     
     if uploaded_file is not None:
         file_name = uploaded_file.name.lower()
-        with st.spinner("📖 Extracting text from your manuscript..."):
-            if file_name.endswith(".pdf"):
-                full_text = extract_text_from_pdf(uploaded_file)
-            elif file_name.endswith(".docx") or file_name.endswith(".doc"):
-                full_text = extract_text_from_docx(uploaded_file)
-            else:
-                full_text = ""
-                st.error("Unsupported file type.")
-            
-            if full_text:
-                extracted = analyze_manuscript_text(full_text)
-                st.session_state.mc_extracted = extracted
-                st.success(f"✅ Extracted **{extracted['word_count']:,}** words from **{uploaded_file.name}**")
-            else:
-                st.warning("Could not extract text from the uploaded file. Please enter details manually below.")
+        # Only re-extract if we haven't already processed this file
+        already_processed = st.session_state.get("mc_last_file_name") == uploaded_file.name
+        if not already_processed:
+            with st.spinner("📖 Extracting text from your manuscript..."):
+                if file_name.endswith(".pdf"):
+                    full_text = extract_text_from_pdf(uploaded_file)
+                elif file_name.endswith(".docx") or file_name.endswith(".doc"):
+                    full_text = extract_text_from_docx(uploaded_file)
+                else:
+                    full_text = ""
+                    st.error("Unsupported file type.")
+                
+                if full_text:
+                    extracted = analyze_manuscript_text(full_text)
+                    st.session_state.mc_extracted = extracted
+                    st.session_state.mc_last_file_name = uploaded_file.name
+                    
+                    # Directly set session state for widgets — this is the CORRECT
+                    # Streamlit pattern for auto-populating fields with keys
+                    # Title: use first non-empty line from text (before abstract)
+                    lines = full_text.strip().split("\n")
+                    title_candidate = ""
+                    for line in lines[:10]:
+                        stripped = line.strip()
+                        if stripped and len(stripped) > 5 and len(stripped.split()) <= 25:
+                            title_candidate = stripped
+                            break
+                    st.session_state.mc_title_input = title_candidate
+                    st.session_state.mc_abstract_input = extracted.get("abstract", "")
+                    st.session_state.mc_wordcount_input = extracted.get("word_count", 0)
+                    st.session_state.mc_keywords_input = extracted.get("keywords", "")
+                    st.session_state.mc_refcount_input = extracted.get("ref_count", 0)
+                    
+                    st.success(f"✅ Extracted **{extracted['word_count']:,}** words from **{uploaded_file.name}**")
+                    st.rerun()  # Rerun to reflect the new session state values in widgets
+                else:
+                    st.warning("Could not extract text from the uploaded file. Please enter details manually below.")
+        else:
+            st.success(f"✅ Document loaded: **{uploaded_file.name}** ({extracted['word_count']:,} words)" if extracted else "")
     
     # ── Show extraction results + manual override ──
     st.markdown("### 📝 Manuscript Details")
@@ -941,13 +1056,11 @@ elif st.session_state.current_page == "Manuscript Checker":
     with col_mc1:
         mc_title = st.text_input(
             "**Manuscript Title**",
-            value=extracted.get("abstract", "")[:100].split("\n")[0] if extracted and not st.session_state.get("mc_title_input") else "",
             placeholder="e.g., The Impact of Trade Policy on Income Distribution",
             key="mc_title_input"
         )
         mc_abstract = st.text_area(
             "**Abstract**",
-            value=extracted.get("abstract", "") if extracted and not st.session_state.get("mc_abstract_input") else "",
             height=150,
             placeholder="Paste your full abstract here (or upload a file to auto-detect)…",
             key="mc_abstract_input"
@@ -956,7 +1069,6 @@ elif st.session_state.current_page == "Manuscript Checker":
             "**Total Word Count**",
             min_value=0,
             max_value=100000,
-            value=extracted.get("word_count", 0) if extracted else 0,
             step=500,
             key="mc_wordcount_input"
         )
@@ -964,7 +1076,6 @@ elif st.session_state.current_page == "Manuscript Checker":
     with col_mc2:
         mc_keywords = st.text_input(
             "**Keywords** (comma-separated)",
-            value=extracted.get("keywords", "") if extracted and not st.session_state.get("mc_keywords_input") else "",
             placeholder="e.g., trade policy, inequality, tariffs, developing countries",
             key="mc_keywords_input"
         )
@@ -972,7 +1083,6 @@ elif st.session_state.current_page == "Manuscript Checker":
             "**Number of References**",
             min_value=0,
             max_value=1000,
-            value=extracted.get("ref_count", 0) if extracted else 0,
             step=5,
             key="mc_refcount_input"
         )
@@ -1047,7 +1157,7 @@ KNOWN JOURNAL REQUIREMENTS AND METADATA FOR {mc_journal.upper()}:
 - SJR Impact: {journal_meta.get('sjr', 'N/A')} | H-Index: {journal_meta.get('h_index', 'N/A')}
 - Quartile: {journal_meta.get('quartile', 'N/A')}
 - ABS Ranking: {journal_meta.get('abs', 'N/A')} | ABDC Ranking: {journal_meta.get('abdc', 'N/A')}
-- Acceptance Rate: {journal_meta.get('acceptance_rate', 'N/A')}
+- Acceptance Rate: {format_acceptance_rate(journal_meta.get('acceptance_rate'))}
 - Avg Review Time: {journal_meta.get('avg_review_months', 'N/A')} months
 - Open Access: {journal_meta.get('open_access', 'N/A')}
 - APC (Article Processing Charge): {journal_meta.get('apc', 'N/A')}
@@ -1323,6 +1433,20 @@ Return your analysis as valid JSON in this exact format:
             use_container_width=True,
             key="download_checker_report_btn"
         )
+        
+        # Link to submit directly to the journal
+        submit_meta = JOURNAL_METADATA.get(mc_journal, {})
+        submit_url = submit_meta.get("homepage_url", submit_meta.get("website", ""))
+        if submit_url:
+            st.markdown("---")
+            st.markdown(f"""
+            <div style="text-align: center; padding: 16px; background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); border-radius: 12px; margin-top: 12px;">
+                <a href="{submit_url}" target="_blank" style="color: white; text-decoration: none; font-size: 18px; font-weight: bold;">
+                    🚀 Ready to Submit? Visit {mc_journal} →
+                </a>
+                <div style="color: #dbeafe; font-size: 13px; margin-top: 6px;">Opens the journal's website where you can find author guidelines and submission portal</div>
+            </div>
+            """, unsafe_allow_html=True)
     else:
         # Show feature overview when no result yet
         st.markdown("---")
