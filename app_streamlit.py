@@ -27,6 +27,47 @@ import pdfplumber
 from docx import Document as DocxDocument
 
 # ────────────────────────────────────────────────
+# SEO & App Configuration (MUST be first Streamlit command)
+# ────────────────────────────────────────────────
+st.set_page_config(
+    page_title="ManuscriptHub • Free Journal Finder & Manuscript Checker",
+    page_icon="📝",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/Chislo/manuscripthub/issues',
+        'About': "ManuscriptHub is a free AI-powered tool to help researchers find the best academic journals, check submission fees, and analyze manuscripts."
+    }
+)
+
+def inject_seo():
+    """Injects real SEO meta tags into the header using Javascript."""
+    meta_tags = """
+    <head>
+        <meta name="description" content="Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees, check acceptance rates, and analyze your paper's fit.">
+        <meta name="keywords" content="journal finder, manuscript checker, submission fees, acceptance rate, predatory journals, academic publishing, AI research assistant, free to publish">
+        <meta property="og:title" content="ManuscriptHub - AI Journal Finder">
+        <meta property="og:description" content="Find the perfect journal for your research. Compare acceptance rates, speed, and fees instantly.">
+        <meta property="og:type" content="website">
+    </head>
+    """
+    # This silent div injects the meta tags into the parent window
+    st.markdown(
+        f"""
+        <div style="display:none">
+            <script>
+                var head = window.parent.document.getElementsByTagName('head')[0];
+                var newMeta = `{meta_tags}`;
+                head.innerHTML += newMeta;
+            </script>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+inject_seo()
+
+# ────────────────────────────────────────────────
 # Document Extraction Helpers
 # ────────────────────────────────────────────────
 def extract_text_from_pdf(uploaded_file):
@@ -124,7 +165,191 @@ def analyze_manuscript_text(full_text):
         "text_preview": full_text[:5000],  # First 5000 chars for LLM context
     }
 
-st.set_page_config(page_title="ManuscriptHub • Journal Finder", page_icon="📄", layout="wide")
+# ────────────────────────────────────────────────
+# LLM & API Configuration
+# ────────────────────────────────────────────────
+
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+def call_llm(prompt, temperature=0.7):
+    """
+    Calls the configured LLM (Gemini or Ollama).
+    """
+    model_choice = "Gemini Pro"
+    
+    # Fallback to Ollama if no API key
+    if "GEMINI_API_KEY" not in st.secrets:
+         model_choice = "Ollama (Llama3)"
+    
+    if model_choice == "Gemini Pro":
+        try:
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature
+                )
+            )
+            return response.text
+        except Exception as e:
+            return f"Error calling Gemini: {e}"
+    else:
+        # Ollama fallback
+        try:
+            response = ollama.chat(model='llama3', messages=[
+              {'role': 'user', 'content': prompt},
+            ])
+            return response['message']['content']
+        except Exception as e:
+            return f"Error calling Ollama: {e}"
+
+# ────────────────────────────────────────────────
+# Journal Metadata Load
+# ────────────────────────────────────────────────
+@st.cache_data
+def load_journal_metadata():
+    if os.path.exists("journal_metadata.json"):
+        with open("journal_metadata.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+JOURNAL_METADATA = load_journal_metadata()
+
+# ────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────
+
+def fit_label(score):
+    if score >= 0.8: return "Excellent fit"
+    if score >= 0.6: return "Good fit"
+    if score >= 0.4: return "Moderate fit"
+    return "Weak fit"
+
+def find_journal_meta(journal_name):
+    """Robustly find journal metadata, handling minor variations (commas, 'and' vs '&', case)."""
+    if not journal_name:
+        return {}
+        
+    # 1. Direct match
+    if journal_name in JOURNAL_METADATA:
+        return JOURNAL_METADATA[journal_name]
+    
+    # normalize function
+    def normalize(s):
+        s = s.lower().replace("&", "and").replace(",", "").replace("-", " ")
+        return " ".join(s.split())
+    
+    target_norm = normalize(journal_name)
+    
+    # 2. Iterate keys and match normalized
+    for key, meta in JOURNAL_METADATA.items():
+        if normalize(key) == target_norm:
+            return meta
+            
+    return {}
+
+def format_acceptance_rate(rate, split=False):
+    """Convert raw acceptance rate (e.g., 0.08) to human-readable string.
+    If split=True, returns (percentage_str, label_str) tuple for use in st.metric."""
+    if rate is None or rate == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        r = float(rate)
+        pct = round(r * 100) if r <= 1 else round(r)
+        if pct <= 5:
+            label = "Highly Selective"
+        elif pct <= 15:
+            label = "Very Selective"
+        elif pct <= 30:
+            label = "Selective"
+        elif pct <= 50:
+            label = "Moderate"
+        else:
+            label = "Accessible"
+        if split:
+            return (f"{pct}%", label)
+        return f"{pct}% ({label})"
+    except (ValueError, TypeError):
+        return (str(rate), "") if split else str(rate)
+
+def format_sjr(sjr, split=False):
+    """Convert SJR score to human-readable label."""
+    if sjr is None or sjr == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        s = float(sjr)
+        if s >= 10:
+            label = "World-Leading"
+        elif s >= 5:
+            label = "Top Tier"
+        elif s >= 2:
+            label = "High Impact"
+        elif s >= 1:
+            label = "Good Impact"
+        elif s >= 0.5:
+            label = "Moderate"
+        else:
+            label = "Emerging"
+        if split:
+            return (f"{s:.2f}", label)
+        return f"{s:.2f} ({label})"
+    except (ValueError, TypeError):
+        return (str(sjr), "") if split else str(sjr)
+
+def format_review_time(months, split=False):
+    """Convert review time in months to human-readable label."""
+    if months is None or months == "N/A":
+        return ("N/A", "") if split else "N/A"
+    try:
+        m = float(months)
+        if m <= 2:
+            label = "Very Fast"
+        elif m <= 4:
+            label = "Fast"
+        elif m <= 6:
+            label = "Average"
+        elif m <= 9:
+            label = "Slow"
+        else:
+            label = "Very Slow"
+        if split:
+            return (f"{m:.1f} mo", label)
+        return f"{m:.1f} months ({label})"
+    except (ValueError, TypeError):
+        return (str(months), "") if split else str(months)
+
+def infer_field(title, abstract, fields):
+    prompt = f"From these fields: {', '.join(fields[1:])}, infer the best one for this paper. Return only the field name.\n\nTitle: {title}\nAbstract: {abstract}"
+    result = call_llm(prompt, temperature=0.1)
+    return result if result in fields[1:] else "Other"
+
+# ────────────────────────────────────────────────
+# Analytics & Logging
+# ────────────────────────────────────────────────
+# Use absolute path so analytics survive Streamlit reruns and working directory changes
+ANALYTICS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analytics.csv")
+
+def log_event(event_type, details=""):
+    """Logs an event to a persistent CSV file and console (stdout)."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Clean details to avoid CSV issues
+    details = str(details).replace(",", ";").replace("\n", " ")
+    
+    # 1. Log to console (Visible in Streamlit Cloud logs, persists across reboots)
+    print(f"[ANALYTICS] {timestamp} | {event_type} | {details}", flush=True)
+    
+    # 2. Log to localized CSV file (Ephemeral on Streamlit Cloud, persists locally)
+    file_exists = os.path.isfile(ANALYTICS_FILE)
+    try:
+        with open(ANALYTICS_FILE, "a", encoding="utf-8") as f:
+            if not file_exists:
+                f.write("timestamp,event_type,details\n")
+            f.write(f"{timestamp},{event_type},{details}\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as e:
+        print(f"Logging error: {e}")
 
 # Initialize session state for persistent inputs
 if "title" not in st.session_state:
@@ -216,23 +441,124 @@ col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     st.image("logo.png", width=600)
 
-st.markdown("**Find the best journals for your paper — based on fit, prestige, speed, and cost.**")
+st.markdown("""
+### Find the perfect home for your research.
+**ManuscriptHub is a free AI-powered journal finder.**
+Compare fit, prestige (SJR/Quartile), review speed, and submission fees instantly. 
+Our tool analyzes your paper to recommend verification-ready journals in Economics, Law, Finance, Business, and Social Sciences.
+""")
 
 # ────────────────────────────────────────────────
-# Load journal metadata (cached to avoid re-parsing 1.8MB on every rerun)
+# Logic: Journal Recommendation Engine
 # ────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_journal_metadata():
-    try:
-        with open("journal_metadata.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+def run_task(task, payload):
+    if task == "journal_recommendation":
+        return recommend_journals(payload)
+    return []
 
-JOURNAL_METADATA = load_journal_metadata()
-if JOURNAL_METADATA is None:
-    st.error("journal_metadata.json not found.")
-    st.stop()
+def recommend_journals(payload):
+    user_title = payload.get("title", "").lower()
+    user_abstract = payload.get("abstract", "").lower()
+    weights = payload.get("weights", {})
+    field_filter = payload.get("field_choice", "Select for me")
+    
+    # 1. Candidate Selection
+    candidates = []
+    
+    # Pre-compute query tokens
+    query_tokens = set(re.findall(r'\w+', user_title + " " + user_abstract))
+    # Remove common stop words (very basic list)
+    stop_words = {"the", "and", "of", "in", "to", "a", "is", "for", "with", "on", "that", "by", "this", "an", "are", "from", "as", "at", "be", "or", "study", "paper", "research", "results", "analysis", "data", "using", "based", "model"}
+    query_tokens = {t for t in query_tokens if t not in stop_words and len(t) > 3}
+    
+    for journal, meta in JOURNAL_METADATA.items():
+        # Field Filter
+        j_field = meta.get("field", "")
+        # Fuzzy field matching if specific field selected
+        if field_filter != "Select for me" and field_filter != "Other":
+            # Just check if any word from filter matches journal field
+            filter_tokens = set(field_filter.lower().replace("/", " ").split())
+            j_field_tokens = set(j_field.lower().replace("/", " ").split())
+            if not filter_tokens.intersection(j_field_tokens):
+                 # Allow cross-disciplinary matches (e.g. Finance in Economics)
+                 if "economics" in j_field.lower() and "finance" in field_filter.lower(): pass
+                 elif "business" in j_field.lower() and "management" in field_filter.lower(): pass
+                 else: continue
+
+        # Hard Constraints
+        if payload.get("require_scopus") and not meta.get("scopus"): continue
+        
+        # Cost Constraints
+        is_sub_fee = meta.get("submission_fee")
+        is_oa = meta.get("open_access")
+        is_apc = meta.get("apc")
+        is_free_to_author = meta.get("free_to_author")
+        
+        if payload.get("require_no_submission") and is_sub_fee: continue
+        if payload.get("require_free_publish") and not is_free_to_author: continue
+        if payload.get("require_diamond_oa") and (not is_oa or is_apc or is_sub_fee): continue
+        
+        # Quality Filter
+        quartile = meta.get("quartile", "Q4") or "Q4"
+        if payload.get("target_quartiles") and quartile not in payload.get("target_quartiles"): continue
+
+        # Scoring
+        # 1. Fit Score (Keyword interaction)
+        scope_text = (meta.get("scope", "") + " " + meta.get("discipline", "") + " " + meta.get("field", "")).lower()
+        scope_tokens = set(re.findall(r'\w+', scope_text))
+        
+        overlap = len(query_tokens.intersection(scope_tokens))
+        # Normalize by log of scope length to avoid bias
+        fit_score = min(overlap / 5.0, 1.0) # Cap at 1.0 for >5 keyword hits
+        
+        # 2. Prestige Score (SJR)
+        sjr = meta.get("sjr", 0) or 0
+        prestige_score = min(sjr / 4.0, 1.0) # Normalize SJR (top journals are >4 usually)
+        
+        # 3. Speed Score (months)
+        months = meta.get("avg_review_months", 12) or 12
+        if months == 0: months = 12
+        # Faster is better. 1 month = 1.0, 12 months = 0.0
+        speed_score = max(0, 1 - (months / 12.0))
+        
+        # 4. Acceptance Score
+        acc = meta.get("acceptance_rate", 0.1) or 0.1
+        # Higher acceptance is "better" for this user preference? 
+        # Usually yes, if they maximize 'Acceptance'.
+        accept_score = acc # 0.0 to 1.0
+        
+        # Weighted Total
+        final_score = (
+            fit_score * weights.get("fit", 0.25) +
+            prestige_score * weights.get("prestige", 0.25) +
+            speed_score * weights.get("speed", 0.25) +
+            accept_score * weights.get("accept", 0.25)
+        )
+        
+        candidates.append({
+            "journal": journal,
+            "rank": 0, # Placeholder
+            "fit_score": fit_score,
+            "prestige_score": prestige_score,
+            "speed_score": speed_score,
+            "acceptance_score": accept_score,
+            "final_score": final_score,
+            "reason": f"Matches keywords in {j_field}. SJR: {sjr}, Review: {months}mo.",
+            "oa_status": "Open Access" if is_oa else "Subscription",
+            "sub_fee": "Yes" if is_sub_fee else "No",
+            "url": meta.get("homepage_url")
+        })
+
+    # Sort and rank
+    candidates.sort(key=lambda x: x["final_score"], reverse=True)
+    
+    # Assign ranks
+    for i, c in enumerate(candidates):
+        c["rank"] = i + 1
+        
+    return candidates
+
+
 
 if st.session_state.current_page == "Journal Finder":
     st.sidebar.header("📌 Hard Filters")
