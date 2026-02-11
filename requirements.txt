@@ -4,3 +4,6 @@ pandas
 ollama
 pdfplumber
 python-docx
+fpdf2
+requests
+beautifulsoup4

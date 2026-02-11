@@ -25,6 +25,10 @@ import datetime
 import re
 import pdfplumber
 from docx import Document as DocxDocument
+from fpdf import FPDF
+import requests
+from bs4 import BeautifulSoup
+from journal_scraper import find_guidelines_url, extract_requirements_from_text
 
 # ────────────────────────────────────────────────
 # SEO & App Configuration (MUST be first Streamlit command)
@@ -144,6 +148,18 @@ def analyze_manuscript_text(full_text):
     if kw_match:
         keywords = kw_match.group(1).strip()
     
+    # Detect Citation Style
+    # Author-Date: (Author, 2023)
+    author_date_count = len(re.findall(r"\([A-Za-z\s]+,\s*[12][0-9]{3}\)", full_text))
+    # Numerical: [1] or [12, 13]
+    numerical_count = len(re.findall(r"\[\d+(?:,\s*\d+)*\]", full_text))
+    
+    detected_citation_style = "Unknown"
+    if author_date_count > numerical_count and author_date_count > 5:
+        detected_citation_style = "Author-Date (APA/Harvard)"
+    elif numerical_count > author_date_count and numerical_count > 5:
+        detected_citation_style = "Numerical (Vancouver/IEEE)"
+
     # Count references
     ref_count = 0
     in_refs = False
@@ -151,11 +167,11 @@ def analyze_manuscript_text(full_text):
         if re.search(r"(?i)^\s*(?:references?|bibliography)\s*$", line.strip()):
             in_refs = True
             continue
-        if in_refs and line.strip():
+        if in_refs and line.strip() and len(line.strip()) > 20:
             ref_count += 1
     # Fallback: count citation-like patterns
     if ref_count == 0:
-        ref_count = len(re.findall(r"\(\d{4}\)", full_text))
+        ref_count = max(author_date_count, numerical_count)
     
     return {
         "word_count": word_count,
@@ -163,6 +179,7 @@ def analyze_manuscript_text(full_text):
         "keywords": keywords,
         "ref_count": ref_count,
         "detected_sections": detected_sections,
+        "citation_style": detected_citation_style,
         "text_preview": full_text[:5000],  # First 5000 chars for LLM context
     }
 
@@ -375,6 +392,54 @@ if "request_count" not in st.session_state:
     st.session_state.request_count = 0
 if "window_start_time" not in st.session_state:
     st.session_state.window_start_time = time.time()
+
+# ────────────────────────────────────────────────
+# PDF Generation Helper
+# ────────────────────────────────────────────────
+def generate_pdf_report(recommendations):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Title
+    pdf.set_font("Arial", style="B", size=16)
+    pdf.cell(0, 10, "ManuscriptHub - Journal Recommendations", ln=True, align="C")
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 10, f"Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align="C")
+    pdf.ln(10)
+    
+    for item in recommendations:
+        journal = item["journal"]
+        meta = find_journal_meta(journal)
+        
+        # Journal Title
+        pdf.set_font("Arial", style="B", size=12)
+        pdf.cell(0, 8, f"{item['rank']}. {journal}", ln=True)
+        
+        # Metrics Line
+        pdf.set_font("Arial", size=10)
+        fit_txt = fit_label(item['fit_score'])
+        sjr_txt = format_sjr(meta.get('sjr'))
+        speed_txt = format_review_time(meta.get('avg_review_months'))
+        acc_txt = format_acceptance_rate(meta.get('acceptance_rate'))
+        
+        metrics = f"Fit: {fit_txt}  |  Prestige: {sjr_txt}  |  Speed: {speed_txt}  |  Accept: {acc_txt}"
+        pdf.cell(0, 6, metrics, ln=True)
+        
+        # Reason Analysis
+        pdf.multi_cell(0, 6, f"Reason: {item['reason']}")
+        
+        # Metadata
+        field = item.get('field', 'N/A')
+        oa = "Open Access" if meta.get("open_access") else "Subscription"
+        fee = "Submission Fee: Yes" if meta.get("submission_fee") else "No Submission Fee"
+        pdf.cell(0, 6, f"Field: {field}  |  Model: {oa} ({fee})", ln=True)
+        
+        pdf.ln(5)
+        
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ────────────────────────────────────────────────
 # Sidebar Logic: Sync Presets & Sliders
@@ -1264,6 +1329,14 @@ elif st.session_state.current_page == "Manuscript Checker":
         help="Quick = structure only. Standard = structure + content. Deep = full compliance review."
     )
     
+    st.sidebar.markdown("---")
+    do_live_check = st.sidebar.checkbox(
+        "🌐 Fetch Live Guidelines",
+        value=False,
+        key="mc_live_check",
+        help="Fetch current 'For Authors' guidelines from the journal website for 100% accuracy on word limits and formatting. (Takes ~10s longer)"
+    )
+    
     # ── Target Journal Selection ──
     st.markdown("### 🎯 Target Journal")
     
@@ -1483,7 +1556,7 @@ elif st.session_state.current_page == "Manuscript Checker":
         elif not mc_journal.strip():
             st.warning("Please specify a target journal.")
         else:
-            # Gather structure info
+            # 1. Gather structure info
             structure_items = {
                 "Introduction": has_intro,
                 "Literature Review": has_lit_review,
@@ -1500,37 +1573,63 @@ elif st.session_state.current_page == "Manuscript Checker":
             present_sections = [k for k, v in structure_items.items() if v]
             missing_sections = [k for k, v in structure_items.items() if not v]
             
-            # Check if journal is in our database — build rich context
+            # 2. Build journal context
             journal_meta = JOURNAL_METADATA.get(mc_journal.strip(), {})
+            
+            # --- LIVE CHECK LOGIC ---
+            live_req_text = ""
+            if st.session_state.get("mc_live_check"):
+                status_placeholder = st.empty()
+                with status_placeholder.status(f"🌐 Live Verification: {mc_journal}", expanded=True) as status_box:
+                    st.write("🔍 Locating official submission guidelines...")
+                    homepage = journal_meta.get("homepage_url", "")
+                    g_url = find_guidelines_url(mc_journal.strip(), homepage)
+                    
+                    if g_url:
+                        st.write(f"📥 Reading guidelines from {g_url}...")
+                        try:
+                            res = requests.get(g_url, timeout=12)
+                            if res.status_code == 200:
+                                soup = BeautifulSoup(res.text, 'html.parser')
+                                # Remove scripts/styles
+                                for s in soup(["script", "style"]): s.decompose()
+                                clean_text = " ".join(soup.get_text().split())
+                                
+                                st.write("🤖 Extracting specific requirements (word counts, style)...")
+                                live_reqs = extract_requirements_from_text(clean_text, mc_journal)
+                                if live_reqs:
+                                    live_req_text = f"VERIFIED LIVE REQUIREMENTS FOR {mc_journal}:\n{json.dumps(live_reqs, indent=2)}"
+                                    st.success("✅ Live guidelines successfully incorporated.")
+                                else:
+                                    st.warning("⚠️ guidelines found but could not extract structured data.")
+                            else:
+                                st.warning(f"⚠️ Could not access guidelines page (Status {res.status_code}).")
+                        except Exception as e:
+                            st.warning(f"⚠️ Error fetching live data: {str(e)}")
+                    else:
+                        st.warning("⚠️ Could not find a direct guidelines link.")
+                    status_box.update(label="Verification Complete", state="complete", expanded=False)
+            # --- END LIVE CHECK LOGIC ---
+
             journal_context = ""
             if journal_meta:
                 journal_context = f"""
-KNOWN JOURNAL REQUIREMENTS AND METADATA FOR {mc_journal.upper()}:
+KNOWN JOURNAL METADATA FOR {mc_journal.upper()}:
 - Publisher: {journal_meta.get('publisher', 'N/A')}
-- Field/Discipline: {journal_meta.get('field', 'N/A')} / {journal_meta.get('discipline', 'N/A')}
+- Field: {journal_meta.get('field', 'N/A')}
 - Scope: {journal_meta.get('scope', 'N/A')}
-- SJR Impact: {journal_meta.get('sjr', 'N/A')} | H-Index: {journal_meta.get('h_index', 'N/A')}
-- Quartile: {journal_meta.get('quartile', 'N/A')}
-- ABS Ranking: {journal_meta.get('abs', 'N/A')} | ABDC Ranking: {journal_meta.get('abdc', 'N/A')}
+- SJR: {journal_meta.get('sjr', 'N/A')} | Quartile: {journal_meta.get('quartile', 'N/A')}
 - Acceptance Rate: {format_acceptance_rate(journal_meta.get('acceptance_rate'))}
-- Avg Review Time: {journal_meta.get('avg_review_months', 'N/A')} months
-- Open Access: {journal_meta.get('open_access', 'N/A')}
-- APC (Article Processing Charge): {journal_meta.get('apc', 'N/A')}
-- Submission Fee: {journal_meta.get('submission_fee', 'N/A')}
-- Scopus Indexed: {journal_meta.get('scopus', 'N/A')}
-- Web of Science: {journal_meta.get('wos', 'N/A')}
-- Country: {journal_meta.get('country', 'N/A')}
-- ISSN: {journal_meta.get('issn', 'N/A')}
-
-USE THIS DATA to provide JOURNAL-SPECIFIC compliance checks. Tailor your analysis to this journal's tier, field, and known requirements.
-"""
-            else:
-                journal_context = f"""
-[JOURNAL NOT IN LOCAL DATABASE: {mc_journal}]
-Use your expert knowledge of this journal's typical requirements, scope, and submission guidelines. If you're unsure about specific requirements, note them as "Verify with journal" rather than guessing.
+- Avg Review: {journal_meta.get('avg_review_months', 'N/A')} months
 """
             
-            # Build manuscript content context from upload
+            if live_req_text:
+                journal_context += f"\n{live_req_text}\n"
+                journal_context += "\nNOTE: The LIVE REQUIREMENTS above are from the journal's official website. PRIORITIZE THEM over internal knowledge."
+            else:
+                journal_context += f"\n[NO LIVE DATA FOUND. Use your expert knowledge of {mc_journal} guidelines.]"
+
+            # 3. Build manuscript content context from upload
             manuscript_content = ""
             if extracted:
                 manuscript_content = f"""
@@ -1538,16 +1637,14 @@ UPLOADED MANUSCRIPT CONTENT (excerpt, {extracted['word_count']} total words):
 ---
 {extracted.get('text_preview', '')}
 ---
-Auto-detected sections: {', '.join(k for k, v in extracted.get('detected_sections', {}).items() if v)}
-Auto-detected keywords: {extracted.get('keywords', 'None found')}
-Auto-detected references: ~{extracted.get('ref_count', 0)} references
 """
             
             depth_instruction = {
                 "Quick Check": "Provide a brief structural assessment only. Focus on missing sections and formatting basics.",
                 "Standard": "Provide a thorough assessment covering structure, content quality, and compliance.",
-                "Deep Analysis": "Provide an exhaustive, publication-quality assessment. Analyze structure, content depth, methodological rigor, citation practices, and full compliance with typical requirements for this journal tier."
+                "Deep Analysis": "Provide an exhaustive, publication-quality assessment. Analyze structure, content depth, methodological rigor, citation practices, and full compliance."
             }
+
             
             checker_prompt = f"""You are an expert academic manuscript reviewer and journal submission advisor specializing in {mc_journal}.
 
@@ -1558,9 +1655,11 @@ Manuscript Information:
 - Word Count: {mc_wordcount if mc_wordcount > 0 else 'Not specified'}
 - Keywords: {mc_keywords if mc_keywords.strip() else 'Not specified'}
 - Number of References: {mc_ref_count if mc_ref_count > 0 else 'Not specified'}
+- Detected Citation Style: {extracted.get('citation_style', 'Unknown') if extracted else 'Unknown'}
 - Sections Present: {', '.join(present_sections) if present_sections else 'None specified'}
 - Sections Missing: {', '.join(missing_sections) if missing_sections else 'None – all checked'}
 - Document Uploaded: {'Yes' if extracted else 'No (manual input only)'}
+- Analysis Depth: {check_depth}
 
 {journal_context}
 
