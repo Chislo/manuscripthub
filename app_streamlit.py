@@ -1095,7 +1095,7 @@ def generate_pdf_report(recommendations):
         
         pdf.ln(5)
         
-    return pdf.output()
+    return bytes(pdf.output())
 
 if st.session_state.current_page == "Journal Finder":
     # ────────────────────────────────────────────────
