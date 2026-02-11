@@ -180,7 +180,7 @@ def analyze_manuscript_text(full_text):
         "ref_count": ref_count,
         "detected_sections": detected_sections,
         "citation_style": detected_citation_style,
-        "text_preview": full_text[:5000],  # First 5000 chars for LLM context
+        "text_preview": full_text[:3500],  # Slightly reduced for safer context window (was 5000)
     }
 
 # ────────────────────────────────────────────────
@@ -517,112 +517,7 @@ Our tool analyzes your paper to recommend verification-ready journals in Economi
 # ────────────────────────────────────────────────
 # Logic: Journal Recommendation Engine
 # ────────────────────────────────────────────────
-def run_task(task, payload):
-    if task == "journal_recommendation":
-        return recommend_journals(payload)
-    return []
-
-def recommend_journals(payload):
-    user_title = payload.get("title", "").lower()
-    user_abstract = payload.get("abstract", "").lower()
-    weights = payload.get("weights", {})
-    field_filter = payload.get("field_choice", "Select for me")
-    
-    # 1. Candidate Selection
-    candidates = []
-    
-    # Pre-compute query tokens
-    query_tokens = set(re.findall(r'\w+', user_title + " " + user_abstract))
-    # Remove common stop words (very basic list)
-    stop_words = {"the", "and", "of", "in", "to", "a", "is", "for", "with", "on", "that", "by", "this", "an", "are", "from", "as", "at", "be", "or", "study", "paper", "research", "results", "analysis", "data", "using", "based", "model"}
-    query_tokens = {t for t in query_tokens if t not in stop_words and len(t) > 3}
-    
-    for journal, meta in JOURNAL_METADATA.items():
-        # Field Filter
-        j_field = meta.get("field", "")
-        # Fuzzy field matching if specific field selected
-        if field_filter != "Select for me" and field_filter != "Other":
-            # Just check if any word from filter matches journal field
-            filter_tokens = set(field_filter.lower().replace("/", " ").split())
-            j_field_tokens = set(j_field.lower().replace("/", " ").split())
-            if not filter_tokens.intersection(j_field_tokens):
-                 # Allow cross-disciplinary matches (e.g. Finance in Economics)
-                 if "economics" in j_field.lower() and "finance" in field_filter.lower(): pass
-                 elif "business" in j_field.lower() and "management" in field_filter.lower(): pass
-                 else: continue
-
-        # Hard Constraints
-        if payload.get("require_scopus") and not meta.get("scopus"): continue
-        
-        # Cost Constraints
-        is_sub_fee = meta.get("submission_fee")
-        is_oa = meta.get("open_access")
-        is_apc = meta.get("apc")
-        is_free_to_author = meta.get("free_to_author")
-        
-        if payload.get("require_no_submission") and is_sub_fee: continue
-        if payload.get("require_free_publish") and not is_free_to_author: continue
-        if payload.get("require_diamond_oa") and (not is_oa or is_apc or is_sub_fee): continue
-        
-        # Quality Filter
-        quartile = meta.get("quartile", "Q4") or "Q4"
-        if payload.get("target_quartiles") and quartile not in payload.get("target_quartiles"): continue
-
-        # Scoring
-        # 1. Fit Score (Keyword interaction)
-        scope_text = (meta.get("scope", "") + " " + meta.get("discipline", "") + " " + meta.get("field", "")).lower()
-        scope_tokens = set(re.findall(r'\w+', scope_text))
-        
-        overlap = len(query_tokens.intersection(scope_tokens))
-        # Normalize by log of scope length to avoid bias
-        fit_score = min(overlap / 5.0, 1.0) # Cap at 1.0 for >5 keyword hits
-        
-        # 2. Prestige Score (SJR)
-        sjr = meta.get("sjr", 0) or 0
-        prestige_score = min(sjr / 4.0, 1.0) # Normalize SJR (top journals are >4 usually)
-        
-        # 3. Speed Score (months)
-        months = meta.get("avg_review_months", 12) or 12
-        if months == 0: months = 12
-        # Faster is better. 1 month = 1.0, 12 months = 0.0
-        speed_score = max(0, 1 - (months / 12.0))
-        
-        # 4. Acceptance Score
-        acc = meta.get("acceptance_rate", 0.1) or 0.1
-        # Higher acceptance is "better" for this user preference? 
-        # Usually yes, if they maximize 'Acceptance'.
-        accept_score = acc # 0.0 to 1.0
-        
-        # Weighted Total
-        final_score = (
-            fit_score * weights.get("fit", 0.25) +
-            prestige_score * weights.get("prestige", 0.25) +
-            speed_score * weights.get("speed", 0.25) +
-            accept_score * weights.get("accept", 0.25)
-        )
-        
-        candidates.append({
-            "journal": journal,
-            "rank": 0, # Placeholder
-            "fit_score": fit_score,
-            "prestige_score": prestige_score,
-            "speed_score": speed_score,
-            "acceptance_score": accept_score,
-            "final_score": final_score,
-            "reason": f"Matches keywords in {j_field}. SJR: {sjr}, Review: {months}mo.",
-            "oa_status": "Open Access" if is_oa else "Subscription",
-            "sub_fee": "Yes" if is_sub_fee else "No",
-            "url": meta.get("homepage_url")
-        })
-
-    # Sort and rank
-    candidates.sort(key=lambda x: x["final_score"], reverse=True)
-    
-    # Assign ranks
-    for i, c in enumerate(candidates):
-        c["rank"] = i + 1
-        
-    return candidates
+# (Older candidate filter removed to avoid duplication)
 
 
 
@@ -722,9 +617,10 @@ def call_llm(prompt, temperature=0.15):
                 )
             )
             return response.text.strip()
-    except (FileNotFoundError, KeyError, Exception):
-        # Fallback if secrets are missing or Gemini fails
-        pass
+    except Exception as e:
+        # If Gemini failed for a reason other than missing key, log it
+        if "GEMINI_API_KEY" in st.secrets:
+            print(f"Gemini error: {e}")
 
     # 2. Fallback to Ollama (Local/Remote)
     try:
@@ -752,7 +648,11 @@ def call_llm(prompt, temperature=0.15):
         )
         return response['message']['content'].strip()
     except Exception as e:
-        st.error(f"LLM call failed (Ollama): {str(e)}")
+        err_msg = str(e)
+        if "connection" in err_msg.lower():
+             st.error(f"⚠️ LLM Connection Error: Could not reach Ollama. Is the server running? ({err_msg})")
+        else:
+             st.error(f"⚠️ LLM Inference Error: {err_msg}")
         return None
 
 def parse_llm_json(raw, max_retries=2):
@@ -814,9 +714,7 @@ def log_event(event_type, details=""):
 def run_task(task, payload):
     if task == "journal_recommendation":
         return recommend_journals(payload)
-    if task == "manuscript_check":
-        return {"status": "coming_soon", "message": "Manuscript Checker is under development."}
-    return {"error": "Unknown task"}
+    return []
 
 @st.cache_data(show_spinner=False)
 def recommend_journals(payload):
@@ -1737,7 +1635,7 @@ elif st.session_state.current_page == "Manuscript Checker":
                                 clean_text = " ".join(soup.get_text().split())
                                 
                                 st.write("🤖 Extracting specific requirements (word counts, style)...")
-                                live_reqs = extract_requirements_from_text(clean_text, mc_journal)
+                                live_reqs = extract_requirements_from_text(clean_text, mc_journal, call_llm)
                                 if live_reqs:
                                     live_req_text = f"VERIFIED LIVE REQUIREMENTS FOR {mc_journal}:\n{json.dumps(live_reqs, indent=2)}"
                                     st.session_state.mc_live_verified = True

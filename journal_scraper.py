@@ -39,18 +39,17 @@ def find_guidelines_url(journal_name: str, homepage: Optional[str] = None) -> Op
     # to find this, we might pass it as a parameter or just return the homepage.
     return homepage
 
-def extract_requirements_from_text(text: str, journal_name: str) -> Dict[str, Any]:
+def extract_requirements_from_text(text: str, journal_name: str, llm_func) -> Dict[str, Any]:
     """
     Uses the LLM to extract a structured requirements matrix from raw guideline text.
     """
-    from app_streamlit import call_llm
     
     prompt = f"""
     You are an expert editorial assistant. Extract specific submission requirements for the journal '{journal_name}' from the following text excerpt.
     
     TEXT:
     ---
-    {text[:8000]}
+    {text[:6000]}
     ---
     
     EXTRACT THE FOLLOWING (if mentioned):
@@ -75,7 +74,7 @@ def extract_requirements_from_text(text: str, journal_name: str) -> Dict[str, An
     }}
     """
     
-    raw_json = call_llm(prompt, temperature=0.1)
+    raw_json = llm_func(prompt, temperature=0.1)
     try:
         # Simple extraction of JSON from response
         match = re.search(r'\{[\s\S]*\}', raw_json)
