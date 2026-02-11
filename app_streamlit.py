@@ -42,24 +42,26 @@ st.set_page_config(
 
 def inject_seo():
     """Injects real SEO meta tags into the header using Javascript."""
-    meta_tags = """
-        <meta name="google-site-verification" content="-rkPJOimCPb2hek8cWMI8IPBkj4hlTGa529vkUbO-i8" />
-        <meta name="description" content="Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees, check acceptance rates, and analyze your paper's fit.">
-        <meta name="keywords" content="journal finder, manuscript checker, submission fees, acceptance rate, predatory journals, academic publishing, AI research assistant, free to publish">
-        <meta property="og:title" content="ManuscriptHub - AI Journal Finder">
-        <meta property="og:description" content="Find the perfect journal for your research. Compare acceptance rates, speed, and fees instantly.">
-        <meta property="og:type" content="website">
-    """
-    # This silent div injects the meta tags into the parent window
+    # We use a script to inject the meta tag specifically for verification
+    # Note: Streamlit Cloud often blocks verification bots, so this is a "best effort"
     st.markdown(
-        f"""
-        <div style="display:none">
-            <script>
-                var head = window.parent.document.getElementsByTagName('head')[0];
-                var newMeta = `{meta_tags}`;
-                head.innerHTML += newMeta;
-            </script>
-        </div>
+        """
+        <script>
+            // remove existing if present to avoid dupes
+            var existing = document.querySelector('meta[name="google-site-verification"]');
+            if (existing) existing.remove();
+
+            var meta = document.createElement('meta');
+            meta.name = "google-site-verification";
+            meta.content = "-rkPJOimCPb2hek8cWMI8IPBkj4hlTGa529vkUbO-i8";
+            document.getElementsByTagName('head')[0].appendChild(meta);
+            
+            // Add other SEO tags
+            var metaDesc = document.createElement('meta');
+            metaDesc.name = "description";
+            metaDesc.content = "Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees.";
+            document.getElementsByTagName('head')[0].appendChild(metaDesc);
+        </script>
         """,
         unsafe_allow_html=True
     )
