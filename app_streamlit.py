@@ -23,6 +23,106 @@ import pandas as pd
 import time
 import datetime
 import re
+import pdfplumber
+from docx import Document as DocxDocument
+
+# ────────────────────────────────────────────────
+# Document Extraction Helpers
+# ────────────────────────────────────────────────
+def extract_text_from_pdf(uploaded_file):
+    """Extract full text from an uploaded PDF file."""
+    text = ""
+    try:
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+    return text.strip()
+
+def extract_text_from_docx(uploaded_file):
+    """Extract full text from an uploaded Word document."""
+    text = ""
+    try:
+        doc = DocxDocument(uploaded_file)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+    except Exception as e:
+        st.error(f"Error reading Word document: {e}")
+    return text.strip()
+
+def analyze_manuscript_text(full_text):
+    """Analyze extracted text to detect structure, word count, sections, etc."""
+    lines = full_text.split("\n")
+    word_count = len(full_text.split())
+    
+    # Detect common academic sections
+    section_patterns = {
+        "Introduction": r"(?i)^\s*\d*\.?\s*introduction",
+        "Literature Review": r"(?i)^\s*\d*\.?\s*(literature\s+review|related\s+(work|literature)|background)",
+        "Methodology/Data": r"(?i)^\s*\d*\.?\s*(method|data|empirical\s+strategy|research\s+design|model)",
+        "Results/Findings": r"(?i)^\s*\d*\.?\s*(results?|findings?|empirical\s+results?)",
+        "Discussion": r"(?i)^\s*\d*\.?\s*discussion",
+        "Conclusion": r"(?i)^\s*\d*\.?\s*conclusions?",
+        "JEL Codes": r"(?i)(jel\s+(codes?|classification))",
+        "Data Availability Statement": r"(?i)(data\s+availability|data\s+access)",
+        "Ethics Statement": r"(?i)(ethics?\s+(statement|approval|declaration))",
+        "Conflict of Interest Statement": r"(?i)(conflict\s+of\s+interest|competing\s+interests?|declaration\s+of\s+interest)",
+    }
+    
+    detected_sections = {}
+    for section_name, pattern in section_patterns.items():
+        for line in lines:
+            if re.search(pattern, line.strip()):
+                detected_sections[section_name] = True
+                break
+        if section_name not in detected_sections:
+            detected_sections[section_name] = False
+    
+    # Extract abstract
+    abstract = ""
+    abstract_match = re.search(
+        r"(?i)(?:^|\n)\s*abstract\s*[:\n](.+?)(?=\n\s*(?:\d+\.?\s*)?(?:introduction|keywords?|jel|\n\s*\n))",
+        full_text, re.DOTALL
+    )
+    if abstract_match:
+        abstract = abstract_match.group(1).strip()
+    elif len(lines) > 5:
+        # Fallback: look for a dense paragraph near the start
+        for i, line in enumerate(lines[:30]):
+            if len(line.split()) > 40:
+                abstract = line.strip()
+                break
+    
+    # Detect keywords
+    keywords = ""
+    kw_match = re.search(r"(?i)keywords?\s*[:\-]\s*(.+?)(?:\n|$)", full_text)
+    if kw_match:
+        keywords = kw_match.group(1).strip()
+    
+    # Count references
+    ref_count = 0
+    in_refs = False
+    for line in lines:
+        if re.search(r"(?i)^\s*(?:references?|bibliography)\s*$", line.strip()):
+            in_refs = True
+            continue
+        if in_refs and line.strip():
+            ref_count += 1
+    # Fallback: count citation-like patterns
+    if ref_count == 0:
+        ref_count = len(re.findall(r"\(\d{4}\)", full_text))
+    
+    return {
+        "word_count": word_count,
+        "abstract": abstract[:2000],  # Cap abstract length
+        "keywords": keywords,
+        "ref_count": ref_count,
+        "detected_sections": detected_sections,
+        "text_preview": full_text[:5000],  # First 5000 chars for LLM context
+    }
 
 st.set_page_config(page_title="ManuscriptHub • Journal Finder", page_icon="📄", layout="wide")
 
@@ -621,6 +721,13 @@ if st.session_state.current_page == "Journal Finder":
                 else:
                      st.markdown('<span style="background-color:#f8f9fa; color:#383d41; padding:4px 8px; border-radius:4px; font-size:14px;">Commonly Subscription/Hybrid</span>', unsafe_allow_html=True)
 
+                # Check Readiness button — links to Manuscript Checker
+                if st.button(f"📄 Check Readiness → {journal}", key=f"check_readiness_{idx}_{journal.replace(' ', '_')}", use_container_width=True):
+                    st.session_state.mc_target_journal = journal
+                    st.session_state.current_page = "Manuscript Checker"
+                    st.session_state.checker_result = None
+                    st.rerun()
+
         if len(recommendations) > st.session_state.result_limit:
             if st.button("Show More", key="show_more_recs"):
                 st.session_state.result_limit += 10
@@ -718,18 +825,17 @@ if st.session_state.current_page == "Journal Finder":
             st.rerun()
 elif st.session_state.current_page == "Manuscript Checker":
     # ────────────────────────────────────────────────
-    # Manuscript Checker — Full Implementation
+    # Manuscript Checker — Full Implementation with File Upload
     # ────────────────────────────────────────────────
     st.markdown("<h1 style='text-align: center; color: #1e40af;'>📄 Manuscript Checker</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center; color: #4b5563;'>Know Before You Submit — Check your manuscript readiness</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: #4b5563;'>Know Before You Submit — Journal-Specific Readiness Analysis</h3>", unsafe_allow_html=True)
     
     st.markdown("""
-    Upload your manuscript details and select a target journal to get an **instant readiness assessment**.
-    The checker evaluates your paper against common journal requirements and provides actionable feedback.
+    Upload your manuscript (PDF or Word) and select your target journal for a **journal-specific readiness assessment**.
+    The checker automatically extracts your paper's structure and evaluates compliance against your target journal's requirements.
     """)
     
     st.divider()
-    
     # ── Manuscript Checker Sidebar ──
     st.sidebar.header("📄 Checker Settings")
     check_depth = st.sidebar.radio(
@@ -740,39 +846,125 @@ elif st.session_state.current_page == "Manuscript Checker":
         help="Quick = structure only. Standard = structure + content. Deep = full compliance review."
     )
     
-    # ── Inputs ──
-    st.markdown("### 📝 Your Manuscript")
+    # ── Target Journal Selection ──
+    st.markdown("### 🎯 Target Journal")
+    
+    # Build journal list for selectbox
+    all_journal_names = sorted(JOURNAL_METADATA.keys())
+    
+    # Check if coming from Journal Finder with a pre-selected journal
+    prefilled_journal = st.session_state.get("mc_target_journal", "")
+    
+    # Journal selection: searchable selectbox from database + manual entry
+    journal_mode = st.radio(
+        "How would you like to select a journal?",
+        ["Select from database", "Type journal name manually"],
+        index=0 if prefilled_journal in all_journal_names else 1,
+        key="journal_mode_radio",
+        horizontal=True
+    )
+    
+    if journal_mode == "Select from database":
+        # Find the index of pre-filled journal
+        default_idx = 0
+        if prefilled_journal and prefilled_journal in all_journal_names:
+            default_idx = all_journal_names.index(prefilled_journal)
+        
+        mc_journal = st.selectbox(
+            "**Select Target Journal**",
+            all_journal_names,
+            index=default_idx,
+            key="mc_journal_selectbox",
+            help="Search by typing — all journals in our database are available."
+        )
+    else:
+        mc_journal = st.text_input(
+            "**Target Journal Name**",
+            value=prefilled_journal,
+            placeholder="e.g., Journal of Financial Economics",
+            key="mc_journal_manual_input"
+        )
+    
+    # Show journal metadata preview if available
+    if mc_journal and mc_journal in JOURNAL_METADATA:
+        jmeta = JOURNAL_METADATA[mc_journal]
+        jm_cols = st.columns(5)
+        jm_cols[0].metric("SJR", jmeta.get("sjr", "N/A"))
+        jm_cols[1].metric("Quartile", jmeta.get("quartile", "N/A"))
+        jm_cols[2].metric("Acceptance", f"{jmeta.get('acceptance_rate', 'N/A')}")
+        jm_cols[3].metric("Avg Review", f"{jmeta.get('avg_review_months', 'N/A')} mo")
+        jm_cols[4].metric("Field", jmeta.get("field", "N/A"))
+        if jmeta.get("scope"):
+            st.caption(f"**Scope:** {jmeta['scope'][:200]}...")
+    
+    st.divider()
+    
+    # ── File Upload ──
+    st.markdown("### � Upload Your Manuscript")
+    uploaded_file = st.file_uploader(
+        "Upload your manuscript (PDF or Word)",
+        type=["pdf", "docx", "doc"],
+        key="mc_file_uploader",
+        help="Upload your full paper to auto-extract title, abstract, word count, sections, and references."
+    )
+    
+    # Initialize auto-extracted data
+    if "mc_extracted" not in st.session_state:
+        st.session_state.mc_extracted = None
+    
+    extracted = st.session_state.mc_extracted
+    
+    if uploaded_file is not None:
+        file_name = uploaded_file.name.lower()
+        with st.spinner("📖 Extracting text from your manuscript..."):
+            if file_name.endswith(".pdf"):
+                full_text = extract_text_from_pdf(uploaded_file)
+            elif file_name.endswith(".docx") or file_name.endswith(".doc"):
+                full_text = extract_text_from_docx(uploaded_file)
+            else:
+                full_text = ""
+                st.error("Unsupported file type.")
+            
+            if full_text:
+                extracted = analyze_manuscript_text(full_text)
+                st.session_state.mc_extracted = extracted
+                st.success(f"✅ Extracted **{extracted['word_count']:,}** words from **{uploaded_file.name}**")
+            else:
+                st.warning("Could not extract text from the uploaded file. Please enter details manually below.")
+    
+    # ── Show extraction results + manual override ──
+    st.markdown("### 📝 Manuscript Details")
+    if extracted:
+        st.info("ℹ️ Fields below are auto-populated from your uploaded document. You can edit any field manually.")
     
     col_mc1, col_mc2 = st.columns([1, 1])
     with col_mc1:
         mc_title = st.text_input(
             "**Manuscript Title**",
+            value=extracted.get("abstract", "")[:100].split("\n")[0] if extracted and not st.session_state.get("mc_title_input") else "",
             placeholder="e.g., The Impact of Trade Policy on Income Distribution",
             key="mc_title_input"
         )
         mc_abstract = st.text_area(
             "**Abstract**",
+            value=extracted.get("abstract", "") if extracted and not st.session_state.get("mc_abstract_input") else "",
             height=150,
-            placeholder="Paste your full abstract here…",
+            placeholder="Paste your full abstract here (or upload a file to auto-detect)…",
             key="mc_abstract_input"
         )
         mc_wordcount = st.number_input(
-            "**Total Word Count** (approximate)",
+            "**Total Word Count**",
             min_value=0,
             max_value=100000,
-            value=0,
+            value=extracted.get("word_count", 0) if extracted else 0,
             step=500,
             key="mc_wordcount_input"
         )
     
     with col_mc2:
-        mc_journal = st.text_input(
-            "**Target Journal**",
-            placeholder="e.g., Journal of Financial Economics",
-            key="mc_journal_input"
-        )
         mc_keywords = st.text_input(
             "**Keywords** (comma-separated)",
+            value=extracted.get("keywords", "") if extracted and not st.session_state.get("mc_keywords_input") else "",
             placeholder="e.g., trade policy, inequality, tariffs, developing countries",
             key="mc_keywords_input"
         )
@@ -780,26 +972,33 @@ elif st.session_state.current_page == "Manuscript Checker":
             "**Number of References**",
             min_value=0,
             max_value=1000,
-            value=0,
+            value=extracted.get("ref_count", 0) if extracted else 0,
             step=5,
             key="mc_refcount_input"
         )
+        if extracted:
+            st.markdown("**📄 Document Preview** (first 500 chars)")
+            st.text_area("Preview", value=extracted.get("text_preview", "")[:500], height=100, disabled=True, key="mc_doc_preview")
     
     st.markdown("#### 📋 Manuscript Structure Checklist")
+    if extracted:
+        st.caption("Auto-detected from your upload — adjust if needed.")
+    
+    det = extracted.get("detected_sections", {}) if extracted else {}
     col_chk1, col_chk2, col_chk3 = st.columns(3)
     with col_chk1:
-        has_intro = st.checkbox("Introduction section", value=True, key="chk_intro")
-        has_lit_review = st.checkbox("Literature review", value=True, key="chk_litrev")
-        has_methodology = st.checkbox("Methodology/Data section", value=True, key="chk_method")
+        has_intro = st.checkbox("Introduction section", value=det.get("Introduction", True), key="chk_intro")
+        has_lit_review = st.checkbox("Literature review", value=det.get("Literature Review", True), key="chk_litrev")
+        has_methodology = st.checkbox("Methodology/Data section", value=det.get("Methodology/Data", True), key="chk_method")
     with col_chk2:
-        has_results = st.checkbox("Results/Findings", value=True, key="chk_results")
-        has_discussion = st.checkbox("Discussion", value=True, key="chk_discussion")
-        has_conclusion = st.checkbox("Conclusion", value=True, key="chk_conclusion")
+        has_results = st.checkbox("Results/Findings", value=det.get("Results/Findings", True), key="chk_results")
+        has_discussion = st.checkbox("Discussion", value=det.get("Discussion", True), key="chk_discussion")
+        has_conclusion = st.checkbox("Conclusion", value=det.get("Conclusion", True), key="chk_conclusion")
     with col_chk3:
-        has_jel = st.checkbox("JEL codes (Economics)", value=False, key="chk_jel")
-        has_data_avail = st.checkbox("Data availability statement", value=False, key="chk_data")
-        has_ethics = st.checkbox("Ethics statement", value=False, key="chk_ethics")
-        has_conflict = st.checkbox("Conflict of interest statement", value=False, key="chk_conflict")
+        has_jel = st.checkbox("JEL codes (Economics)", value=det.get("JEL Codes", False), key="chk_jel")
+        has_data_avail = st.checkbox("Data availability statement", value=det.get("Data Availability Statement", False), key="chk_data")
+        has_ethics = st.checkbox("Ethics statement", value=det.get("Ethics Statement", False), key="chk_ethics")
+        has_conflict = st.checkbox("Conflict of interest statement", value=det.get("Conflict of Interest Statement", False), key="chk_conflict")
         has_cover_letter = st.checkbox("Cover letter prepared", value=False, key="chk_cover")
     
     st.divider()
@@ -809,8 +1008,13 @@ elif st.session_state.current_page == "Manuscript Checker":
         st.session_state.checker_result = None
     
     if st.button("🔍 Check Manuscript Readiness", type="primary", use_container_width=True, key="check_manuscript_btn"):
-        if not mc_title.strip() or not mc_abstract.strip():
-            st.warning("Please provide at least a title and abstract.")
+        has_abstract = mc_abstract.strip() if mc_abstract else ""
+        has_upload = extracted is not None
+        
+        if not mc_title.strip() and not has_upload:
+            st.warning("Please provide a title or upload a manuscript.")
+        elif not has_abstract and not has_upload:
+            st.warning("Please provide an abstract or upload a manuscript.")
         elif not mc_journal.strip():
             st.warning("Please specify a target journal.")
         else:
@@ -831,22 +1035,48 @@ elif st.session_state.current_page == "Manuscript Checker":
             present_sections = [k for k, v in structure_items.items() if v]
             missing_sections = [k for k, v in structure_items.items() if not v]
             
-            # Check if journal is in our database
+            # Check if journal is in our database — build rich context
             journal_meta = JOURNAL_METADATA.get(mc_journal.strip(), {})
             journal_context = ""
             if journal_meta:
                 journal_context = f"""
-                Known journal metadata:
-                - Field: {journal_meta.get('field', 'N/A')}
-                - Scope: {journal_meta.get('scope', 'N/A')}
-                - SJR: {journal_meta.get('sjr', 'N/A')}
-                - Acceptance Rate: {journal_meta.get('acceptance_rate', 'N/A')}
-                - Avg Review: {journal_meta.get('avg_review_months', 'N/A')} months
-                - Quartile: {journal_meta.get('quartile', 'N/A')}
-                - ABS: {journal_meta.get('abs', 'N/A')} | ABDC: {journal_meta.get('abdc', 'N/A')}
-                - Open Access: {journal_meta.get('open_access', 'N/A')}
-                - Submission Fee: {journal_meta.get('submission_fee', 'N/A')}
-                """
+KNOWN JOURNAL REQUIREMENTS AND METADATA FOR {mc_journal.upper()}:
+- Publisher: {journal_meta.get('publisher', 'N/A')}
+- Field/Discipline: {journal_meta.get('field', 'N/A')} / {journal_meta.get('discipline', 'N/A')}
+- Scope: {journal_meta.get('scope', 'N/A')}
+- SJR Impact: {journal_meta.get('sjr', 'N/A')} | H-Index: {journal_meta.get('h_index', 'N/A')}
+- Quartile: {journal_meta.get('quartile', 'N/A')}
+- ABS Ranking: {journal_meta.get('abs', 'N/A')} | ABDC Ranking: {journal_meta.get('abdc', 'N/A')}
+- Acceptance Rate: {journal_meta.get('acceptance_rate', 'N/A')}
+- Avg Review Time: {journal_meta.get('avg_review_months', 'N/A')} months
+- Open Access: {journal_meta.get('open_access', 'N/A')}
+- APC (Article Processing Charge): {journal_meta.get('apc', 'N/A')}
+- Submission Fee: {journal_meta.get('submission_fee', 'N/A')}
+- Scopus Indexed: {journal_meta.get('scopus', 'N/A')}
+- Web of Science: {journal_meta.get('wos', 'N/A')}
+- Country: {journal_meta.get('country', 'N/A')}
+- ISSN: {journal_meta.get('issn', 'N/A')}
+
+USE THIS DATA to provide JOURNAL-SPECIFIC compliance checks. Tailor your analysis to this journal's tier, field, and known requirements.
+"""
+            else:
+                journal_context = f"""
+[JOURNAL NOT IN LOCAL DATABASE: {mc_journal}]
+Use your expert knowledge of this journal's typical requirements, scope, and submission guidelines. If you're unsure about specific requirements, note them as "Verify with journal" rather than guessing.
+"""
+            
+            # Build manuscript content context from upload
+            manuscript_content = ""
+            if extracted:
+                manuscript_content = f"""
+UPLOADED MANUSCRIPT CONTENT (excerpt, {extracted['word_count']} total words):
+---
+{extracted.get('text_preview', '')}
+---
+Auto-detected sections: {', '.join(k for k, v in extracted.get('detected_sections', {}).items() if v)}
+Auto-detected keywords: {extracted.get('keywords', 'None found')}
+Auto-detected references: ~{extracted.get('ref_count', 0)} references
+"""
             
             depth_instruction = {
                 "Quick Check": "Provide a brief structural assessment only. Focus on missing sections and formatting basics.",
@@ -854,68 +1084,74 @@ elif st.session_state.current_page == "Manuscript Checker":
                 "Deep Analysis": "Provide an exhaustive, publication-quality assessment. Analyze structure, content depth, methodological rigor, citation practices, and full compliance with typical requirements for this journal tier."
             }
             
-            checker_prompt = f"""You are an expert academic manuscript reviewer and journal submission advisor.
+            checker_prompt = f"""You are an expert academic manuscript reviewer and journal submission advisor specializing in {mc_journal}.
 
 Manuscript Information:
-- Title: {mc_title}
-- Abstract: {mc_abstract}
+- Title: {mc_title if mc_title.strip() else 'Not provided'}
+- Abstract: {mc_abstract if mc_abstract.strip() else 'See uploaded content below'}
 - Target Journal: {mc_journal}
 - Word Count: {mc_wordcount if mc_wordcount > 0 else 'Not specified'}
 - Keywords: {mc_keywords if mc_keywords.strip() else 'Not specified'}
 - Number of References: {mc_ref_count if mc_ref_count > 0 else 'Not specified'}
 - Sections Present: {', '.join(present_sections) if present_sections else 'None specified'}
 - Sections Missing: {', '.join(missing_sections) if missing_sections else 'None – all checked'}
+- Document Uploaded: {'Yes' if extracted else 'No (manual input only)'}
 
 {journal_context}
+
+{manuscript_content}
 
 Analysis Depth: {check_depth}
 {depth_instruction[check_depth]}
 
-Your task:
-1. Evaluate how ready this manuscript is for submission to {mc_journal}.
-2. Provide a readiness score from 0-100.
-3. Provide specific, actionable feedback.
+IMPORTANT INSTRUCTIONS:
+1. Your analysis must be SPECIFIC TO {mc_journal}. Reference this journal by name in your feedback.
+2. If journal metadata is provided above, use it to check compliance (e.g., word limits typical for this journal's quartile/field, required sections for this discipline, whether JEL codes are needed, etc.).
+3. If a full manuscript was uploaded, analyze the actual content — not just the metadata.
+4. Evaluate how ready this manuscript is for submission to {mc_journal}.
+5. Provide a readiness score from 0-100.
+6. Provide specific, actionable feedback with journal-specific recommendations.
 
 Return your analysis as valid JSON in this exact format:
 {{
   "readiness_score": 75,
-  "overall_verdict": "Good but needs revisions",
+  "overall_verdict": "Good but needs revisions before submitting to {mc_journal}",
   "abstract_feedback": {{
     "score": 80,
-    "issues": ["Abstract could be more concise", "Missing key contribution statement"],
+    "issues": ["Abstract could be more concise for {mc_journal}", "Missing key contribution statement"],
     "suggestion": "Reduce to 250 words and emphasize the novel contribution in the first two sentences."
   }},
   "structure_feedback": {{
     "score": 70,
     "missing_critical": ["Data Availability Statement"],
     "missing_recommended": ["JEL Codes"],
-    "suggestion": "Add a data availability statement as most Q1 journals now require this."
+    "suggestion": "Add a data availability statement as {mc_journal} requires this."
   }},
   "content_feedback": {{
     "score": 75,
     "strengths": ["Clear research question", "Timely topic"],
     "weaknesses": ["Abstract lacks methodological detail"],
-    "suggestion": "Briefly mention the econometric approach in the abstract."
+    "suggestion": "Briefly mention the econometric approach in the abstract to meet {mc_journal} standards."
   }},
   "compliance_checklist": [
     {{
-      "item": "Word count within limits",
+      "item": "Word count within {mc_journal} limits",
       "status": "pass",
-      "note": "Typical limit is 8000-12000 words"
+      "note": "Typical limit for this journal is 8000-12000 words"
     }},
     {{
       "item": "Ethics statement",
       "status": "warning",
-      "note": "Not provided, may be required"
+      "note": "Not provided, required by {mc_journal}"
     }}
   ],
   "action_items": [
-    "Shorten abstract to under 250 words",
+    "Shorten abstract to under 250 words (required by {mc_journal})",
     "Add JEL classification codes",
     "Include data availability statement",
-    "Prepare a cover letter addressing the editor"
+    "Prepare a cover letter addressing the editor of {mc_journal}"
   ],
-  "journal_fit_assessment": "This manuscript appears to be a reasonable fit for the journal's scope, but the methodology section should be strengthened to match the journal's empirical rigor expectations."
+  "journal_fit_assessment": "This manuscript appears to be a reasonable fit for {mc_journal}'s scope, but the methodology section should be strengthened to match the journal's empirical rigor expectations."
 }}
 """
             
@@ -1059,7 +1295,9 @@ Return your analysis as valid JSON in this exact format:
         checker_report_lines.append("ManuscriptHub — Manuscript Readiness Report")
         checker_report_lines.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         checker_report_lines.append(f"Manuscript: {st.session_state.get('mc_title_input', 'N/A')}")
-        checker_report_lines.append(f"Target Journal: {st.session_state.get('mc_journal_input', 'N/A')}")
+        checker_report_lines.append(f"Target Journal: {mc_journal}")
+        if extracted:
+            checker_report_lines.append(f"Source: Uploaded document ({extracted.get('word_count', 0)} words)")
         checker_report_lines.append("=" * 60)
         checker_report_lines.append(f"\nREADINESS SCORE: {score}/100 — {result.get('overall_verdict', '')}")
         checker_report_lines.append(f"\nAbstract Score: {abs_fb.get('score', 'N/A')}/100")
@@ -1088,21 +1326,26 @@ Return your analysis as valid JSON in this exact format:
     else:
         # Show feature overview when no result yet
         st.markdown("---")
-        col_feat1, col_feat2, col_feat3 = st.columns(3)
+        col_feat1, col_feat2, col_feat3, col_feat4 = st.columns(4)
         with col_feat1:
             st.markdown("""
-            #### 📊 Readiness Score
-            Get a 0-100% score showing how ready your manuscript is for your target journal.
+            #### 📤 Upload & Analyze
+            Upload your full paper (PDF or Word) and we'll auto-extract structure, word count, and sections.
             """)
         with col_feat2:
             st.markdown("""
-            #### ✍️ Actionable Fixes
-            Receive specific suggestions like "Shorten abstract", "Add JEL codes", "Format references".
+            #### 📊 Readiness Score
+            Get a 0-100% score showing how ready your manuscript is for your **specific** target journal.
             """)
         with col_feat3:
             st.markdown("""
+            #### ✍️ Actionable Fixes
+            Receive journal-specific suggestions like "Shorten abstract", "Add JEL codes", "Format references".
+            """)
+        with col_feat4:
+            st.markdown("""
             #### ✅ Compliance Check
-            Automated review of ethics, formatting, data availability, and more.
+            Journal-specific review of ethics, formatting, data availability, and more.
             """)
 
 elif st.session_state.current_page == "Analytics":
@@ -1194,13 +1437,14 @@ It uses advanced LLMs to deliver personalized journal recommendations based on y
 
 Whether you're optimizing for topical fit, journal prestige, review speed, or cost (APC, submission fees, open access), ManuscriptHub simplifies the process to save time and avoid desk rejections.
 
-### What's Coming Soon: Manuscript Checker
-Soon, you'll be able to upload your manuscript (PDF, Word, or text) and get an instant readiness assessment against any journal's guidelines. It will highlight:
+### 📄 Manuscript Checker — Now Live!
+Upload your manuscript (PDF or Word) and get an **instant journal-specific readiness assessment**. Features include:
+- **Document upload** — auto-extraction of structure, word count, sections, and references
+- **Journal-specific analysis** — compliance checks tailored to your target journal's requirements
 - **Compliance checklist** — formatting, word limits, references, ethics, data availability, figures, cover letter
-- **Actionable fixes** — "Shorten abstract to 200 words", "Add JEL codes", "Move Table 3 to supplementary material"
+- **Actionable fixes** — "Shorten abstract to 200 words", "Add JEL codes", "Include data availability statement"
 - **Readiness score** — 0–100% per journal, with a clear path to 100%
-
-This will make submissions faster, more confident, and less stressful.
+- **Seamless integration** — click "Check Readiness" on any Journal Finder result to go straight to the checker
 
 ### Future: Browser Extension for Submission Workflow
 Looking ahead, we're developing a **browser extension** to streamline the entire submission process. It will integrate directly with journal websites to:
