@@ -564,6 +564,29 @@ def fit_label(score):
     if score >= 0.4: return "Moderate fit"
     return "Weak fit"
 
+def find_journal_meta(journal_name):
+    """Robustly find journal metadata, handling minor variations (commas, 'and' vs '&', case)."""
+    if not journal_name:
+        return {}
+        
+    # 1. Direct match
+    if journal_name in JOURNAL_METADATA:
+        return JOURNAL_METADATA[journal_name]
+    
+    # normalize function
+    def normalize(s):
+        s = s.lower().replace("&", "and").replace(",", "").replace("-", " ")
+        return " ".join(s.split())
+    
+    target_norm = normalize(journal_name)
+    
+    # 2. Iterate keys and match normalized
+    for key, meta in JOURNAL_METADATA.items():
+        if normalize(key) == target_norm:
+            return meta
+            
+    return {}
+
 def format_acceptance_rate(rate, split=False):
     """Convert raw acceptance rate (e.g., 0.08) to human-readable string.
     If split=True, returns (percentage_str, label_str) tuple for use in st.metric."""
@@ -805,13 +828,14 @@ if st.session_state.current_page == "Journal Finder":
         st.markdown("### 📥 Export Results")
         col_dl1, col_dl2 = st.columns(2)
         
-        with col_dl1:
+        if recommendations:
             # Build CSV data
             csv_rows = []
             for item in recommendations:
                 journal = item["journal"]
-                meta = JOURNAL_METADATA.get(journal, {})
-                homepage = meta.get("homepage_url") or item.get("url") or ""
+                meta = find_journal_meta(journal)
+                homepage = meta.get("homepage_url", meta.get("website", ""))
+                
                 csv_rows.append({
                     "Rank": item.get("rank", ""),
                     "Journal": journal,
@@ -985,8 +1009,12 @@ elif st.session_state.current_page == "Manuscript Checker":
             st.caption(f"**Scope:** {jmeta['scope'][:200]}...")
         # Link to journal homepage / submission guidelines
         homepage = jmeta.get("homepage_url", jmeta.get("website", ""))
+        search_url = f"https://www.google.com/search?q={mc_journal.replace(' ', '+')}+journal+submission"
+        
         if homepage:
-            st.markdown(f"🔗 [**Visit Journal Website / Author Guidelines**]({homepage})", unsafe_allow_html=True)
+            st.markdown(f"🔗 [**Visit Journal Website**]({homepage}) &nbsp;|&nbsp; 🔍 [Search Google]({search_url})", unsafe_allow_html=True)
+        else:
+            st.markdown(f"� [**Search Google for Journal Website**]({search_url})", unsafe_allow_html=True)
     
     st.divider()
     
