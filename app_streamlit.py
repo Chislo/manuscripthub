@@ -1058,11 +1058,11 @@ def generate_pdf_report(recommendations):
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # Title
-    pdf.set_font("Arial", style="B", size=16)
+    pdf.set_font("Helvetica", style="B", size=16)
     pdf.cell(0, 10, "ManuscriptHub - Journal Recommendations", ln=True, align="C")
     pdf.ln(5)
     
-    pdf.set_font("Arial", size=10)
+    pdf.set_font("Helvetica", size=10)
     pdf.cell(0, 10, f"Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align="C")
     pdf.ln(10)
     
@@ -1071,11 +1071,11 @@ def generate_pdf_report(recommendations):
         meta = find_journal_meta(journal)
         
         # Journal Title
-        pdf.set_font("Arial", style="B", size=12)
+        pdf.set_font("Helvetica", style="B", size=12)
         pdf.cell(0, 8, f"{item['rank']}. {journal}", ln=True)
         
         # Metrics Line
-        pdf.set_font("Arial", size=10)
+        pdf.set_font("Helvetica", size=10)
         fit_txt = fit_label(item.get('fit_score', 0))
         sjr_val, sjr_lbl = format_sjr(meta.get('sjr'), split=True)
         speed_val, speed_lbl = format_review_time(meta.get('avg_review_months'), split=True)
@@ -1095,7 +1095,7 @@ def generate_pdf_report(recommendations):
         
         pdf.ln(5)
         
-    return pdf.output(dest='S').encode('latin-1', 'replace')
+    return pdf.output()
 
 if st.session_state.current_page == "Journal Finder":
     # ────────────────────────────────────────────────
