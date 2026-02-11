@@ -1049,6 +1049,54 @@ def format_review_time(months, split=False):
     except (ValueError, TypeError):
         return (str(months), "") if split else str(months)
 
+# ────────────────────────────────────────────────
+# PDF Generation Helper
+# ────────────────────────────────────────────────
+def generate_pdf_report(recommendations):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Title
+    pdf.set_font("Arial", style="B", size=16)
+    pdf.cell(0, 10, "ManuscriptHub - Journal Recommendations", ln=True, align="C")
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 10, f"Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align="C")
+    pdf.ln(10)
+    
+    for item in recommendations:
+        journal = item["journal"]
+        meta = find_journal_meta(journal)
+        
+        # Journal Title
+        pdf.set_font("Arial", style="B", size=12)
+        pdf.cell(0, 8, f"{item['rank']}. {journal}", ln=True)
+        
+        # Metrics Line
+        pdf.set_font("Arial", size=10)
+        fit_txt = fit_label(item.get('fit_score', 0))
+        sjr_val, sjr_lbl = format_sjr(meta.get('sjr'), split=True)
+        speed_val, speed_lbl = format_review_time(meta.get('avg_review_months'), split=True)
+        acc_val, acc_lbl = format_acceptance_rate(meta.get('acceptance_rate'), split=True)
+        
+        metrics = f"Fit: {item.get('fit_score', 0):.0%} ({fit_txt})  |  Prestige: {sjr_val} ({sjr_lbl})  |  Speed: {speed_val} ({speed_lbl})"
+        pdf.cell(0, 6, metrics, ln=True)
+        
+        # Reason Analysis
+        pdf.multi_cell(0, 6, f"Reason: {item['reason']}")
+        
+        # Metadata
+        field = item.get('field', 'N/A')
+        oa = "Open Access" if meta.get("open_access") else "Subscription"
+        fee = "Submission Fee: Yes" if meta.get("submission_fee") else "No Submission Fee"
+        pdf.cell(0, 6, f"Field: {field}  |  Model: {oa} ({fee})", ln=True)
+        
+        pdf.ln(5)
+        
+    return pdf.output(dest='S').encode('latin-1', 'replace')
+
 if st.session_state.current_page == "Journal Finder":
     # ────────────────────────────────────────────────
     # Main Input & Generate
@@ -1153,19 +1201,30 @@ if st.session_state.current_page == "Journal Finder":
                 st.link_button(f"🌐 Visit **{journal}** Website", homepage, use_container_width=True)
                 st.info(item["reason"])
 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Fit", f"{item.get('fit_score', 0):.0%}")
-                col2.metric("Prestige", f"{item.get('prestige_score', 0):.0%}")
-                col3.metric("Speed", f"{item.get('speed_score', 0):.0%}")
-                col4.metric("Acceptance", f"{item.get('acceptance_score', 0):.0%}")
-
-                st.markdown(f"**Assessment:** {fit_label(item.get('fit_score', 0.0))}")
+                # Enhanced Metrics Grid (Matching Manuscript Checker style)
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                
+                # Fit
+                f_val = f"{item.get('fit_score', 0):.0%}"
+                f_lbl = fit_label(item.get('fit_score', 0))
+                m_col1.metric("Fit", f_val, delta=f_lbl, delta_color="normal")
+                
+                # Prestige
+                p_val, p_lbl = format_sjr(meta.get('sjr'), split=True)
+                m_col2.metric("Prestige (SJR)", p_val, delta=p_lbl, delta_color="off")
+                
+                # Speed
+                s_val, s_lbl = format_review_time(meta.get('avg_review_months'), split=True)
+                m_col3.metric("Review Speed", s_val, delta=s_lbl, delta_color="off")
+                
+                # Acceptance
+                a_val, a_lbl = format_acceptance_rate(meta.get('acceptance_rate'), split=True)
+                m_col4.metric("Acceptance", a_val, delta=a_lbl, delta_color="off")
 
                 # Details row (Smart data display)
                 details = []
                 if meta.get('abdc') and meta.get('abdc') != "N/A": details.append(f"ABDC {meta['abdc']}")
                 if meta.get('abs') and meta.get('abs') != "N/A": details.append(f"ABS {meta['abs']}")
-                if meta.get('sjr'): details.append(f"SJR {meta['sjr']}")
                 details.append(f"Field: {item.get('field', 'N/A')}")
                 st.markdown(f"**Details:** {' • '.join(details)}")
 
@@ -1252,14 +1311,27 @@ if st.session_state.current_page == "Journal Finder":
             df_export.to_csv(csv_buffer, index=False)
             csv_data = csv_buffer.getvalue()
             
-            st.download_button(
-                label="⬇️ Download as CSV",
-                data=csv_data,
-                file_name=f"manuscripthub_results_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                key="download_csv_btn"
-            )
+            with col_dl1:
+                st.download_button(
+                    label="⬇️ Download as CSV",
+                    data=csv_data,
+                    file_name=f"manuscripthub_results_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="download_csv_btn"
+                )
+            
+            with col_dl2:
+                # PDF Generation
+                pdf_data = generate_pdf_report(recommendations)
+                st.download_button(
+                    label="📄 Download as PDF Report",
+                    data=pdf_data,
+                    file_name=f"manuscripthub_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_pdf_btn"
+                )
         
         with col_dl2:
             # Build a human-readable text report
