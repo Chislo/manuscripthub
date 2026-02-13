@@ -45,29 +45,78 @@ st.set_page_config(
 )
 
 def inject_seo():
-    """Injects real SEO meta tags into the header using Javascript."""
-    # We use a script to inject the meta tag specifically for verification
-    # Note: Streamlit Cloud often blocks verification bots, so this is a "best effort"
-    st.markdown(
-        """
-        <script>
-            // remove existing if present to avoid dupes
-            var existing = document.querySelector('meta[name="google-site-verification"]');
-            if (existing) existing.remove();
+    """Injects comprehensive SEO meta tags directly as HTML (not JS) so crawlers can read them."""
+    # IMPORTANT: Use raw HTML meta tags, NOT JavaScript document.createElement.
+    # Googlebot's initial crawler does NOT execute JavaScript, so JS-injected
+    # meta tags are invisible to search engines on the critical first pass.
+    
+    APP_URL = "https://journal-matcher.streamlit.app"
+    APP_TITLE = "ManuscriptHub • Free AI Journal Finder & Manuscript Checker"
+    APP_DESCRIPTION = (
+        "ManuscriptHub is a free AI-powered academic journal finder and manuscript checker. "
+        "Find the best journals for your research paper — compare fit, prestige (SJR/Quartile), "
+        "review speed, acceptance rates, and submission fees. Supports Economics, Law, Finance, "
+        "Business, Medicine, STEM, Social Sciences, and more. No sign-up required."
+    )
+    APP_KEYWORDS = (
+        "journal finder, academic journal finder, manuscript checker, free journal finder, "
+        "find journal for paper, journal recommendation tool, SJR journal ranking, Scopus journals, "
+        "no submission fee journals, open access journals, diamond OA, APC free journals, "
+        "economics journals, law journals, where to publish research, ManuscriptHub"
+    )
 
-            var meta = document.createElement('meta');
-            meta.name = "google-site-verification";
-            meta.content = "-rkPJOimCPb2hek8cWMI8IPBkj4hlTGa529vkUbO-i8";
-            document.getElementsByTagName('head')[0].appendChild(meta);
-            
-            // Add other SEO tags
-            var metaDesc = document.createElement('meta');
-            metaDesc.name = "description";
-            metaDesc.content = "Free AI Journal Finder and Manuscript Checker. Find journals with no submission fees.";
-            document.getElementsByTagName('head')[0].appendChild(metaDesc);
+    st.markdown(
+        f"""
+        <!-- Primary SEO Meta Tags -->
+        <meta name="description" content="{APP_DESCRIPTION}" />
+        <meta name="keywords" content="{APP_KEYWORDS}" />
+        <meta name="author" content="Chisom Ubabukoh" />
+        <meta name="robots" content="index, follow" />
+        <link rel="canonical" href="{APP_URL}/" />
+
+        <!-- Google Search Console Verification -->
+        <meta name="google-site-verification" content="-rkPJOimCPb2hek8cWMI8IPBkj4hlTGa529vkUbO-i8" />
+
+        <!-- Open Graph / Facebook -->
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="{APP_URL}/" />
+        <meta property="og:title" content="{APP_TITLE}" />
+        <meta property="og:description" content="{APP_DESCRIPTION}" />
+        <meta property="og:site_name" content="ManuscriptHub" />
+
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:url" content="{APP_URL}/" />
+        <meta name="twitter:title" content="{APP_TITLE}" />
+        <meta name="twitter:description" content="{APP_DESCRIPTION}" />
+        <meta name="twitter:creator" content="@Chylo360" />
+
+        <!-- JSON-LD Structured Data for Google Rich Results -->
+        <script type="application/ld+json">
+        {{
+            "@context": "https://schema.org",
+            "@type": "WebApplication",
+            "name": "ManuscriptHub",
+            "url": "{APP_URL}",
+            "description": "{APP_DESCRIPTION}",
+            "applicationCategory": "EducationalApplication",
+            "operatingSystem": "Web Browser",
+            "offers": {{
+                "@type": "Offer",
+                "price": "0",
+                "priceCurrency": "USD"
+            }},
+            "author": {{
+                "@type": "Person",
+                "name": "Chisom Ubabukoh"
+            }},
+            "datePublished": "2026-01-01",
+            "softwareVersion": "2.0",
+            "keywords": "journal finder, manuscript checker, academic publishing, research tools"
+        }}
         </script>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 inject_seo()
@@ -481,6 +530,8 @@ st.markdown("""
 Compare fit, prestige (SJR/Quartile), review speed, and submission fees instantly. 
 Our tool analyzes your paper to recommend verification-ready journals in Economics, Law, Finance, Business, and Social Sciences.
 """)
+# Crawlable SEO text — Google specifically indexes st.text() content in Streamlit apps
+st.text("ManuscriptHub — Free AI Journal Finder & Manuscript Checker for Researchers. No sign-up needed.")
 
 # ────────────────────────────────────────────────
 # Logic: Journal Recommendation Engine

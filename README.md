@@ -1,15 +1,18 @@
 # ManuscriptHub 🚀
 
-AI-powered journal recommender for Economics, Law, and all academic disciplines.
+**Free AI-powered academic journal finder and manuscript checker** for researchers in Economics, Law, Finance, Business, Medicine, STEM, Social Sciences, and all academic disciplines.
+
+🌐 **Live App**: [journal-matcher.streamlit.app](https://journal-matcher.streamlit.app)
 
 ## Features
-- **Hybrid Intelligence**: Combination of a highly accurate Economics/Law database and global AI-knowledge (via Google Gemini) for universal field support.
-- **Universal Journal Finder**: Supports Medicine, STEM, Social Sciences, Arts, Psychology, and more.
-- **Precision Filters**: Hard filters for Scopus indexation, target quartiles (Q1-Q4), and cost models (Submission fees, APC, Diamond OA).
-- **Aesthetic UI**: Smooth sidebar-main synchronization, high-visibility progress indicators, and responsive design.
+- **AI Journal Finder**: Enter your paper title and abstract — get ranked journal recommendations with fit scores, prestige (SJR/Quartile), review speed, and acceptance rates.
+- **Manuscript Checker**: Upload your paper (PDF/DOCX) and check it against real journal guidelines before submitting.
+- **Hybrid Intelligence**: Combination of a curated Economics/Law/Finance database (1,800+ journals) and Google Gemini AI for universal field support.
+- **Precision Filters**: Hard filters for Scopus indexation, target quartiles (Q1-Q4), and cost models (No submission fee, No APC, Diamond OA).
+- **Completely Free**: No sign-up, no fees, no limits. Built for researchers, by researchers.
 
 ## Live Deployment (Cloud)
-This app is ready for deployment on **Streamlit Cloud**.
+This app is deployed on **Streamlit Community Cloud** at [journal-matcher.streamlit.app](https://journal-matcher.streamlit.app).
 1. Set your `GEMINI_API_KEY` in the Streamlit Secrets dashboard.
 2. The app will automatically use Gemini-Flash for fast, zero-cost cloud recommendations.
 
